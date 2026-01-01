@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod model;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+use pyo3::prelude::*;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[pymodule]
+fn core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<model::operator::SpinOperator>()?;
+    m.add_class::<model::operator::ElectronOperator>()?;
+    Ok(())
 }

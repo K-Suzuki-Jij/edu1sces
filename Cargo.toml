@@ -3,4 +3,9 @@ name = "edu1sces"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
+ahash = "0.8.12"
+pyo3 = { version = "0.27.2", features = ["extension-module"] }
