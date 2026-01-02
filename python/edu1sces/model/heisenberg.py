@@ -48,3 +48,14 @@ class HeisenbergModel:
             self.exchange_xy,
             self.exchange_z,
         )
+
+    def calc_dim_u1_sector(self, total_sz: float) -> int:
+        """Calculate the dimension of the U(1) sector with the given total Sz.
+
+        Args:
+            total_sz (float): Total Sz value of the sector.
+
+        Returns:
+            int: Dimension of the sector.
+        """
+        return self.core_model.calc_dim_u1_sector(total_sz)
