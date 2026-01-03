@@ -1,3 +1,4 @@
+pub mod basis;
 pub mod model;
 
 use pyo3::prelude::*;
