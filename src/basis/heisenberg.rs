@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use anyhow::{bail, Result};
 
-use crate::model::heisenberg::HeisenbergModel;
+use crate::model::HeisenbergModel;
 
 #[derive(Debug, Clone)]
 pub struct HeisenbergBasis {
@@ -82,7 +82,7 @@ impl HeisenbergBasis {
 
             let mut sz2 = min_sz2;
             while sz2 <= max_sz2 {
-                let digit: u128 = ((sz2 + two_s) / 2) as u128;
+                let digit = ((two_s - sz2) / 2) as u128;
                 dfs(
                     site + 1,
                     two_s_list,
@@ -147,21 +147,6 @@ mod tests {
 
     #[test]
     fn basis_two_spin_half_two_sites_total_sz_zero_manual() {
-        // two_s_list = [1, 1]
-        // local_dim = [2, 2]
-        // site_base = [1, 2]
-        //
-        // digit <-> sz2 mapping for two_s = 1
-        // digit 0 -> sz2 = -1
-        // digit 1 -> sz2 = +1
-        //
-        // target total_sz = 0.0 -> total_sz2 = 0
-        //
-        // valid basis elements
-        // site0 digit 1 sz2 +1, site1 digit 0 sz2 -1 -> basis = 1*1 + 0*2 = 1
-        // site0 digit 0 sz2 -1, site1 digit 1 sz2 +1 -> basis = 0*1 + 1*2 = 2
-        //
-        // sorted basis should be [1, 2]
         let model = HeisenbergModel {
             num_sites: 2,
             two_s_list: vec![1, 1],
@@ -184,25 +169,6 @@ mod tests {
 
     #[test]
     fn basis_mixed_spins_three_sites_total_sz_zero_manual() {
-        // two_s_list = [1, 2, 1]
-        // local_dim = [2, 3, 2]
-        // site_base = [1, 2, 6]
-        //
-        // digit <-> sz2 mapping
-        // site0 two_s=1: digit 0 -> sz2 = -1, digit 1 -> sz2 = +1
-        // site1 two_s=2: digit 0 -> sz2 = -2, digit 1 -> sz2 =  0, digit 2 -> sz2 = +2
-        // site2 two_s=1: digit 0 -> sz2 = -1, digit 1 -> sz2 = +1
-        //
-        // target total_sz2 = 0
-        //
-        // enumerate valid configs by hand
-        // site1 digit 2 sz2 +2 -> site0+site2 must be -2 -> digit0=0, digit2=0 -> basis = 0*1 + 2*2 + 0*6 = 4
-        // site1 digit 1 sz2  0 -> site0+site2 must be  0 -> two cases
-        //   digit0=1, digit2=0 -> basis = 1*1 + 1*2 + 0*6 = 3
-        //   digit0=0, digit2=1 -> basis = 0*1 + 1*2 + 1*6 = 8
-        // site1 digit 0 sz2 -2 -> site0+site2 must be +2 -> digit0=1, digit2=1 -> basis = 1*1 + 0*2 + 1*6 = 7
-        //
-        // sorted basis should be [3, 4, 7, 8]
         let model = HeisenbergModel {
             num_sites: 3,
             two_s_list: vec![1, 2, 1],
@@ -222,7 +188,7 @@ mod tests {
         assert_eq!(b.inverse_basis.get(&4).copied().unwrap(), 1);
         assert_eq!(b.inverse_basis.get(&7).copied().unwrap(), 2);
         assert_eq!(b.inverse_basis.get(&8).copied().unwrap(), 3);
-        assert_eq!(b.inverse_basis.len(), 4usize);
+        assert_eq!(b.inverse_basis.len(), 4);
     }
 
     #[test]
@@ -237,5 +203,45 @@ mod tests {
         };
 
         assert!(HeisenbergBasis::new(model, 0.1).is_err());
+    }
+
+    #[test]
+    fn basis_all_up_and_all_down_two_sites_spin_half() {
+        let model = HeisenbergModel {
+            num_sites: 2,
+            two_s_list: vec![1, 1],
+            hz_list: vec![0.0, 0.0],
+            d_list: vec![0.0, 0.0],
+            exchange_xy: std::collections::HashMap::new(),
+            exchange_z: std::collections::HashMap::new(),
+        };
+
+        let b_up = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
+        assert_eq!(b_up.basis, vec![0]);
+        assert_eq!(b_up.inverse_basis.get(&0).copied().unwrap(), 0);
+
+        let b_dn = HeisenbergBasis::new(model, -1.0).unwrap();
+        assert_eq!(b_dn.basis, vec![3]);
+        assert_eq!(b_dn.inverse_basis.get(&3).copied().unwrap(), 0);
+    }
+
+    #[test]
+    fn basis_all_up_and_all_down_three_sites_mixed_spin() {
+        let model = HeisenbergModel {
+            num_sites: 3,
+            two_s_list: vec![1, 2, 1],
+            hz_list: vec![0.0, 0.0, 0.0],
+            d_list: vec![0.0, 0.0, 0.0],
+            exchange_xy: std::collections::HashMap::new(),
+            exchange_z: std::collections::HashMap::new(),
+        };
+
+        let b_up = HeisenbergBasis::new(model.clone(), 2.0).unwrap();
+        assert_eq!(b_up.basis, vec![0]);
+        assert_eq!(b_up.inverse_basis.get(&0).copied().unwrap(), 0);
+
+        let b_dn = HeisenbergBasis::new(model, -2.0).unwrap();
+        assert_eq!(b_dn.basis, vec![11]);
+        assert_eq!(b_dn.inverse_basis.get(&11).copied().unwrap(), 0);
     }
 }

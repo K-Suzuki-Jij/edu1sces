@@ -1,3 +1,4 @@
+use crate::blas::{csr_add, csr_transpose, CsrMatrix};
 use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -47,6 +48,94 @@ impl HeisenbergModel {
             }
         }
         Ok(())
+    }
+
+    fn get_two_sz_at(&self, site: usize) -> Result<i32> {
+        let two_sz = *self
+            .two_s_list
+            .get(site)
+            .ok_or_else(|| anyhow::anyhow!("site out of range"))?;
+        if two_sz < 0 {
+            bail!("two_s_list must be non-negative");
+        }
+        Ok(two_sz)
+    }
+
+    pub fn local_op_sz(&self, site: usize) -> Result<CsrMatrix> {
+        let two_sz = self.get_two_sz_at(site)?;
+        let dim = (two_sz as usize) + 1;
+
+        let mut m = CsrMatrix::new();
+        m.row_dim = dim;
+        m.col_dim = dim;
+
+        m.rows = Vec::with_capacity(dim + 1);
+        m.rows.push(0);
+
+        for k in 0..dim {
+            let m2 = two_sz - 2 * (k as i32);
+            if m2 != 0 {
+                m.cols.push(k);
+                m.vals.push(0.5 * (m2 as f64));
+            }
+            m.rows.push(m.vals.len());
+        }
+
+        Ok(m)
+    }
+
+    pub fn local_op_sp(&self, site: usize) -> Result<CsrMatrix> {
+        let two_sz = self.get_two_sz_at(site)?;
+        let dim = (two_sz as usize) + 1;
+
+        let s = 0.5 * (two_sz as f64);
+
+        let mut m = CsrMatrix::new();
+        m.row_dim = dim;
+        m.col_dim = dim;
+
+        m.rows = Vec::with_capacity(dim + 1);
+        m.rows.push(0);
+
+        for row in 0..dim {
+            if row + 1 >= dim {
+                m.rows.push(m.vals.len());
+                continue;
+            }
+
+            let col = row + 1;
+
+            let m2 = two_sz - 2 * (col as i32);
+            let mm = 0.5 * (m2 as f64);
+
+            let v2 = s * (s + 1.0) - mm * (mm + 1.0);
+            let v = if v2 <= 0.0 { 0.0 } else { v2.sqrt() };
+
+            if v != 0.0 {
+                m.cols.push(col);
+                m.vals.push(v);
+            }
+
+            m.rows.push(m.vals.len());
+        }
+
+        Ok(m)
+    }
+
+    pub fn local_op_sm(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.local_op_sp(site)?)
+    }
+
+    pub fn local_op_sx(&self, site: usize, eps: f64) -> Result<CsrMatrix> {
+        let sp = self.local_op_sp(site)?;
+        let sm = self.local_op_sm(site)?;
+        csr_add(0.5, &sp, 0.5, &sm, eps)
+    }
+
+    pub fn local_op_isy(&self, site: usize, eps: f64) -> Result<CsrMatrix> {
+        let sp = self.local_op_sp(site)?;
+        let sm = self.local_op_sm(site)?;
+        csr_add(0.5, &sp, -0.5, &sm, eps)
     }
 }
 
@@ -213,67 +302,268 @@ mod tests {
         assert!(HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, HashMap::new()).is_err());
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use std::collections::HashMap;
+    #[test]
+    fn mixed_spins_three_sites_all_key_properties() {
+        let m = HeisenbergModel {
+            num_sites: 3,
+            two_s_list: vec![1, 2, 1], // 1/2, 1, 1/2
+            hz_list: vec![0.0, 0.0, 0.0],
+            d_list: vec![0.0, 0.0, 0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
 
-        #[test]
-        fn mixed_spins_three_sites_all_key_properties() {
-            let m = HeisenbergModel {
-                num_sites: 3,
-                two_s_list: vec![1, 2, 1], // 1/2, 1, 1/2
-                hz_list: vec![0.0, 0.0, 0.0],
-                d_list: vec![0.0, 0.0, 0.0],
-                exchange_xy: HashMap::new(),
-                exchange_z: HashMap::new(),
-            };
+        // nontrivial sector dimensions
+        assert_eq!(m.calc_dim_u1_sector(0.0).unwrap(), 4);
+        assert_eq!(m.calc_dim_u1_sector(1.0).unwrap(), 3);
+        assert_eq!(m.calc_dim_u1_sector(2.0).unwrap(), 1);
 
-            // nontrivial sector dimensions
-            assert_eq!(m.calc_dim_u1_sector(0.0).unwrap(), 4);
-            assert_eq!(m.calc_dim_u1_sector(1.0).unwrap(), 3);
-            assert_eq!(m.calc_dim_u1_sector(2.0).unwrap(), 1);
+        // symmetry
+        assert_eq!(m.calc_dim_u1_sector(-1.0).unwrap(), 3);
+        assert_eq!(m.calc_dim_u1_sector(-2.0).unwrap(), 1);
 
-            // symmetry
-            assert_eq!(m.calc_dim_u1_sector(-1.0).unwrap(), 3);
-            assert_eq!(m.calc_dim_u1_sector(-2.0).unwrap(), 1);
+        // out of range must be zero
+        assert_eq!(m.calc_dim_u1_sector(3.0).unwrap(), 0);
+        assert_eq!(m.calc_dim_u1_sector(-3.0).unwrap(), 0);
+    }
 
-            // out of range must be zero
-            assert_eq!(m.calc_dim_u1_sector(3.0).unwrap(), 0);
-            assert_eq!(m.calc_dim_u1_sector(-3.0).unwrap(), 0);
-        }
+    #[test]
+    fn single_spin_half_reachable_and_unreachable_sectors() {
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![1], // 1/2
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
 
-        #[test]
-        fn single_spin_half_reachable_and_unreachable_sectors() {
-            let m = HeisenbergModel {
-                num_sites: 1,
-                two_s_list: vec![1], // 1/2
-                hz_list: vec![0.0],
-                d_list: vec![0.0],
-                exchange_xy: HashMap::new(),
-                exchange_z: HashMap::new(),
-            };
+        // reachable
+        assert_eq!(m.calc_dim_u1_sector(0.5).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(-0.5).unwrap(), 1);
 
-            // reachable
-            assert_eq!(m.calc_dim_u1_sector(0.5).unwrap(), 1);
-            assert_eq!(m.calc_dim_u1_sector(-0.5).unwrap(), 1);
+        // parity mismatch or unreachable sector must be zero
+        assert_eq!(m.calc_dim_u1_sector(0.0).unwrap(), 0);
+    }
 
-            // parity mismatch or unreachable sector must be zero
-            assert_eq!(m.calc_dim_u1_sector(0.0).unwrap(), 0);
-        }
+    #[test]
+    fn non_half_integer_total_sz_is_error() {
+        let m = HeisenbergModel {
+            num_sites: 2,
+            two_s_list: vec![1, 1],
+            hz_list: vec![0.0, 0.0],
+            d_list: vec![0.0, 0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
 
-        #[test]
-        fn non_half_integer_total_sz_is_error() {
-            let m = HeisenbergModel {
-                num_sites: 2,
-                two_s_list: vec![1, 1],
-                hz_list: vec![0.0, 0.0],
-                d_list: vec![0.0, 0.0],
-                exchange_xy: HashMap::new(),
-                exchange_z: HashMap::new(),
-            };
+        assert!(m.calc_dim_u1_sector(0.1).is_err());
+    }
 
-            assert!(m.calc_dim_u1_sector(0.1).is_err());
-        }
+    #[test]
+    fn local_op_sz_s_half_and_one() {
+        let tol = 1e-12;
+
+        // S = 1/2, order: m=+1/2 (0), -1/2 (1)
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sz = m.local_op_sz(0).unwrap();
+        assert_eq!(sz.row_dim, 2);
+        assert_eq!(sz.col_dim, 2);
+        assert_eq!(sz.rows, vec![0, 1, 2]);
+        assert_eq!(sz.cols, vec![0, 1]);
+        assert_eq!(sz.vals.len(), 2);
+        assert!((sz.vals[0] - 0.5).abs() <= tol);
+        assert!((sz.vals[1] - (-0.5)).abs() <= tol);
+
+        // S = 1, order: m=+1 (0), 0 (1), -1 (2)
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sz = m.local_op_sz(0).unwrap();
+        assert_eq!(sz.row_dim, 3);
+        assert_eq!(sz.col_dim, 3);
+        assert_eq!(sz.rows, vec![0, 1, 1, 2]);
+        assert_eq!(sz.cols, vec![0, 2]);
+        assert_eq!(sz.vals.len(), 2);
+        assert!((sz.vals[0] - 1.0).abs() <= tol);
+        assert!((sz.vals[1] - (-1.0)).abs() <= tol);
+    }
+
+    #[test]
+    fn local_op_sp_s_half_and_one() {
+        let tol = 1e-12;
+        let rt2 = 2.0_f64.sqrt();
+
+        // S = 1/2, order: m=+1/2 (0), -1/2 (1)
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sp = m.local_op_sp(0).unwrap();
+        assert_eq!(sp.row_dim, 2);
+        assert_eq!(sp.col_dim, 2);
+        assert_eq!(sp.rows, vec![0, 1, 1]);
+        assert_eq!(sp.cols, vec![1]);
+        assert_eq!(sp.vals.len(), 1);
+        assert!((sp.vals[0] - 1.0).abs() <= tol);
+
+        // S = 1, order: m=+1 (0), 0 (1), -1 (2)
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sp = m.local_op_sp(0).unwrap();
+        assert_eq!(sp.row_dim, 3);
+        assert_eq!(sp.col_dim, 3);
+        assert_eq!(sp.rows, vec![0, 1, 2, 2]);
+        assert_eq!(sp.cols, vec![1, 2]);
+        assert_eq!(sp.vals.len(), 2);
+        assert!((sp.vals[0] - rt2).abs() <= tol);
+        assert!((sp.vals[1] - rt2).abs() <= tol);
+    }
+
+    #[test]
+    fn local_op_sm_s_half_and_one() {
+        let tol = 1e-12;
+        let rt2 = 2.0_f64.sqrt();
+
+        // S = 1/2
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sm = m.local_op_sm(0).unwrap();
+        assert_eq!(sm.row_dim, 2);
+        assert_eq!(sm.col_dim, 2);
+        assert_eq!(sm.rows, vec![0, 0, 1]);
+        assert_eq!(sm.cols, vec![0]);
+        assert_eq!(sm.vals.len(), 1);
+        assert!((sm.vals[0] - 1.0).abs() <= tol);
+
+        // S = 1
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sm = m.local_op_sm(0).unwrap();
+        assert_eq!(sm.row_dim, 3);
+        assert_eq!(sm.col_dim, 3);
+        assert_eq!(sm.rows, vec![0, 0, 1, 2]);
+        assert_eq!(sm.cols, vec![0, 1]);
+        assert_eq!(sm.vals.len(), 2);
+        assert!((sm.vals[0] - rt2).abs() <= tol);
+        assert!((sm.vals[1] - rt2).abs() <= tol);
+    }
+
+    #[test]
+    fn local_op_sx_s_half_and_one() {
+        let tol = 1e-12;
+        let rt2h = 0.5 * 2.0_f64.sqrt();
+
+        // S = 1/2 : Sx = 0.5 Sp + 0.5 Sm
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sx = m.local_op_sx(0, tol).unwrap();
+        assert_eq!(sx.row_dim, 2);
+        assert_eq!(sx.col_dim, 2);
+        assert_eq!(sx.rows, vec![0, 1, 2]);
+        assert_eq!(sx.cols, vec![1, 0]);
+        assert_eq!(sx.vals, vec![0.5, 0.5]);
+
+        // S = 1
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let sx = m.local_op_sx(0, tol).unwrap();
+        assert_eq!(sx.row_dim, 3);
+        assert_eq!(sx.col_dim, 3);
+        assert_eq!(sx.rows, vec![0, 1, 3, 4]);
+        assert_eq!(sx.cols, vec![1, 0, 2, 1]);
+        assert_eq!(sx.vals.len(), 4);
+        assert!((sx.vals[0] - rt2h).abs() <= tol);
+        assert!((sx.vals[1] - rt2h).abs() <= tol);
+        assert!((sx.vals[2] - rt2h).abs() <= tol);
+        assert!((sx.vals[3] - rt2h).abs() <= tol);
+    }
+
+    #[test]
+    fn local_op_isy_s_half_and_one() {
+        let tol = 1e-12;
+        let rt2h = 0.5 * 2.0_f64.sqrt();
+
+        // S = 1/2
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let isy = m.local_op_isy(0, tol).unwrap();
+        assert_eq!(isy.row_dim, 2);
+        assert_eq!(isy.col_dim, 2);
+        assert_eq!(isy.rows, vec![0, 1, 2]);
+        assert_eq!(isy.cols, vec![1, 0]);
+        assert_eq!(isy.vals, vec![0.5, -0.5]);
+
+        // S = 1
+        let m = HeisenbergModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hz_list: vec![0.0],
+            d_list: vec![0.0],
+            exchange_xy: HashMap::new(),
+            exchange_z: HashMap::new(),
+        };
+        let isy = m.local_op_isy(0, tol).unwrap();
+        assert_eq!(isy.row_dim, 3);
+        assert_eq!(isy.col_dim, 3);
+        assert_eq!(isy.rows, vec![0, 1, 3, 4]);
+        assert_eq!(isy.cols, vec![1, 0, 2, 1]);
+        assert_eq!(isy.vals.len(), 4);
+        assert!((isy.vals[0] - (rt2h)).abs() <= tol);
+        assert!((isy.vals[1] - (-rt2h)).abs() <= tol);
+        assert!((isy.vals[2] - (rt2h)).abs() <= tol);
+        assert!((isy.vals[3] - (-rt2h)).abs() <= tol);
     }
 }
