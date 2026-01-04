@@ -1,6 +1,8 @@
 use ahash::AHashMap;
 use anyhow::{bail, Result};
 
+pub const MATRIX_ZERO_EPS: f64 = 1e-13;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CsrMatrix {
     pub row_dim: usize,
@@ -63,13 +65,7 @@ impl CsrMatrix {
     }
 }
 
-pub fn csr_add(
-    c_m1: f64,
-    m1: &CsrMatrix,
-    c_m2: f64,
-    m2: &CsrMatrix,
-    eps: f64,
-) -> Result<CsrMatrix> {
+pub fn csr_add(c_m1: f64, m1: &CsrMatrix, c_m2: f64, m2: &CsrMatrix) -> Result<CsrMatrix> {
     if m1.row_dim != m2.row_dim || m1.col_dim != m2.col_dim {
         bail!("shape mismatch for add");
     }
@@ -99,7 +95,7 @@ pub fn csr_add(
         keys.sort_unstable();
         for c in keys {
             let v = acc[&c];
-            if v.abs() > eps {
+            if v.abs() > MATRIX_ZERO_EPS {
                 out.cols.push(c);
                 out.vals.push(v);
                 nnz += 1;
@@ -111,13 +107,7 @@ pub fn csr_add(
     Ok(out)
 }
 
-pub fn csr_mul(
-    c_m1: f64,
-    m1: &CsrMatrix,
-    c_m2: f64,
-    m2: &CsrMatrix,
-    eps: f64,
-) -> Result<CsrMatrix> {
+pub fn csr_mul(c_m1: f64, m1: &CsrMatrix, c_m2: f64, m2: &CsrMatrix) -> Result<CsrMatrix> {
     if m1.col_dim != m2.row_dim {
         bail!("shape mismatch for mul");
     }
@@ -155,7 +145,7 @@ pub fn csr_mul(
 
         for c in keys {
             let v = acc[&c];
-            if v.abs() > eps {
+            if v.abs() > MATRIX_ZERO_EPS {
                 out.cols.push(c);
                 out.vals.push(v);
                 nnz += 1;
@@ -297,7 +287,7 @@ mod tests {
             vals: vec![4.0, 5.0, 6.0],
         };
 
-        let c = csr_add(2.0, &a, -0.5, &b, 1e-12).unwrap();
+        let c = csr_add(2.0, &a, -0.5, &b).unwrap();
 
         assert_eq!(c.row_dim, 2);
         assert_eq!(c.col_dim, 2);
@@ -325,7 +315,7 @@ mod tests {
             vals: vec![-1.0],
         };
 
-        let c = csr_add(1.0, &a, 1.0, &b, 1e-12).unwrap();
+        let c = csr_add(1.0, &a, 1.0, &b).unwrap();
 
         assert_eq!(c.rows, vec![0, 0]);
         assert!(c.cols.is_empty());
@@ -351,7 +341,7 @@ mod tests {
             vals: vec![],
         };
 
-        assert!(csr_add(1.0, &a, 1.0, &b, 1e-12).is_err());
+        assert!(csr_add(1.0, &a, 1.0, &b).is_err());
     }
 
     #[test]
@@ -372,7 +362,7 @@ mod tests {
             vals: vec![4.0, 5.0, 6.0],
         };
 
-        let c = csr_mul(2.0, &a, -0.5, &b, 1e-12).unwrap();
+        let c = csr_mul(2.0, &a, -0.5, &b).unwrap();
 
         assert_eq!(c.row_dim, 2);
         assert_eq!(c.col_dim, 2);
@@ -400,7 +390,7 @@ mod tests {
             vals: vec![1.0, 1.0],
         };
 
-        let c = csr_mul(1.0, &a, 1.0, &b, 1e-12).unwrap();
+        let c = csr_mul(1.0, &a, 1.0, &b).unwrap();
 
         assert_eq!(c.rows, vec![0, 0, 0]);
         assert!(c.cols.is_empty());
@@ -426,7 +416,7 @@ mod tests {
             vals: vec![],
         };
 
-        assert!(csr_mul(1.0, &a, 1.0, &b, 1e-12).is_err());
+        assert!(csr_mul(1.0, &a, 1.0, &b).is_err());
     }
 
     #[test]
