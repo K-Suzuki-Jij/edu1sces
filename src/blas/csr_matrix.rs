@@ -63,6 +63,46 @@ impl CsrMatrix {
     pub fn nnz(&self) -> usize {
         self.vals.len()
     }
+
+    /// Returns whether this CSR matrix is symmetric within tolerance `tol`.
+    /// Preconditions:
+    /// - CSR is structurally valid.
+    /// - Column indices in each row are strictly increasing (so binary_search is valid).
+    pub fn is_symmetric(&self, tol: f64) -> Result<bool> {
+        if self.row_dim != self.col_dim {
+            bail!("matrix is not square");
+        }
+
+        self.check()?;
+
+        let find_in_row = |r: usize, c: usize| -> Option<f64> {
+            let start = self.rows[r];
+            let end = self.rows[r + 1];
+            match self.cols[start..end].binary_search(&c) {
+                Ok(pos) => Some(self.vals[start + pos]),
+                Err(_) => None,
+            }
+        };
+
+        for i in 0..self.row_dim {
+            let start = self.rows[i];
+            let end = self.rows[i + 1];
+            for p in start..end {
+                let j = self.cols[p];
+                let v_ij = self.vals[p];
+
+                let Some(v_ji) = find_in_row(j, i) else {
+                    return Ok(false);
+                };
+
+                if (v_ij - v_ji).abs() > tol {
+                    return Ok(false);
+                }
+            }
+        }
+
+        Ok(true)
+    }
 }
 
 pub fn csr_add(c_m1: f64, m1: &CsrMatrix, c_m2: f64, m2: &CsrMatrix) -> Result<CsrMatrix> {

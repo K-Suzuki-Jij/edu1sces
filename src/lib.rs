@@ -1,5 +1,6 @@
 pub mod basis;
 pub mod blas;
+pub mod hamiltonian;
 pub mod model;
 
 use pyo3::prelude::*;

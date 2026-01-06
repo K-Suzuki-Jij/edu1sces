@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
-pyo3 = { version = "0.27.2", features = ["anyhow", "extension-module"] }
+pyo3 = { version = "0.27.2", features = ["anyhow"] }
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]

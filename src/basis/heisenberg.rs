@@ -8,9 +8,9 @@ pub struct HeisenbergBasis {
     pub model: HeisenbergModel,
     pub total_sz: f64,
     pub total_sz2: i32,
-    pub basis: Vec<u128>,
-    pub inverse_basis: AHashMap<u128, usize>,
-    pub site_base: Vec<u128>,
+    pub basis: Vec<i128>,
+    pub inverse_basis: AHashMap<i128, usize>,
+    pub site_base: Vec<i128>,
 }
 
 impl HeisenbergBasis {
@@ -24,13 +24,13 @@ impl HeisenbergBasis {
         let dim = model.calc_dim_u1_sector(total_sz)?;
         let mut site_base = Vec::with_capacity(num_sites);
 
-        let mut site_stride: u128 = 1;
+        let mut site_stride: i128 = 1;
         for &two_s in model.two_s_list.iter() {
             site_base.push(site_stride);
-            let local_dim = (two_s as u128) + 1;
+            let local_dim = (two_s as i128) + 1;
             site_stride = site_stride
                 .checked_mul(local_dim)
-                .ok_or_else(|| anyhow::anyhow!("u128 overflow"))?;
+                .ok_or_else(|| anyhow::anyhow!("i128 overflow"))?;
         }
 
         let mut basis = Vec::with_capacity(dim as usize);
@@ -49,13 +49,13 @@ impl HeisenbergBasis {
         fn dfs(
             site: usize,
             two_s_list: &[i32],
-            site_base: &[u128],
+            site_base: &[i128],
             suffix_min_sz2: &[i32],
             suffix_max_sz2: &[i32],
             total_sz2_target: i32,
             sz2_sum: i32,
-            basis_code: u128,
-            out: &mut Vec<u128>,
+            basis_code: i128,
+            out: &mut Vec<i128>,
         ) {
             if site == two_s_list.len() {
                 if sz2_sum == total_sz2_target {
@@ -82,7 +82,7 @@ impl HeisenbergBasis {
 
             let mut sz2 = min_sz2;
             while sz2 <= max_sz2 {
-                let digit = ((two_s - sz2) / 2) as u128;
+                let digit = ((two_s - sz2) / 2) as i128;
                 dfs(
                     site + 1,
                     two_s_list,
@@ -106,7 +106,7 @@ impl HeisenbergBasis {
             &suffix_max_sz2,
             total_sz2,
             0,
-            0u128,
+            0i128,
             &mut basis,
         );
 
@@ -135,8 +135,13 @@ impl HeisenbergBasis {
         })
     }
 
-    pub fn dim(&self) -> usize {
-        self.basis.len()
+    /// Return the local basis index (digit) at `site` from packed `basis`.
+    /// Convention matches the encoder in `dfs`:
+    /// digit = (two_s - sz2)/2, i.e. digit 0 corresponds to m=+S.
+    pub fn find_local_basis(&self, basis: i128, site: usize) -> usize {
+        let base = self.site_base[site];
+        let local_dim = (self.model.two_s_list[site] as i128) + 1;
+        ((basis / base).rem_euclid(local_dim)) as usize
     }
 }
 

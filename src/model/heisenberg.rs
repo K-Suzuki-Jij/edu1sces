@@ -50,19 +50,8 @@ impl HeisenbergModel {
         Ok(())
     }
 
-    fn get_two_sz_at(&self, site: usize) -> Result<i32> {
-        let two_sz = *self
-            .two_s_list
-            .get(site)
-            .ok_or_else(|| anyhow::anyhow!("site out of range"))?;
-        if two_sz < 0 {
-            bail!("two_s_list must be non-negative");
-        }
-        Ok(two_sz)
-    }
-
-    pub fn local_op_sz(&self, site: usize) -> Result<CsrMatrix> {
-        let two_sz = self.get_two_sz_at(site)?;
+    pub fn make_local_op_sz(&self, site: usize) -> Result<CsrMatrix> {
+        let two_sz = self.two_s_list[site];
         let dim = (two_sz as usize) + 1;
 
         let mut m = CsrMatrix::new();
@@ -84,8 +73,8 @@ impl HeisenbergModel {
         Ok(m)
     }
 
-    pub fn local_op_sp(&self, site: usize) -> Result<CsrMatrix> {
-        let two_sz = self.get_two_sz_at(site)?;
+    pub fn make_local_op_sp(&self, site: usize) -> Result<CsrMatrix> {
+        let two_sz = self.two_s_list[site];
         let dim = (two_sz as usize) + 1;
 
         let s = 0.5 * (two_sz as f64);
@@ -122,25 +111,25 @@ impl HeisenbergModel {
         Ok(m)
     }
 
-    pub fn local_op_sm(&self, site: usize) -> Result<CsrMatrix> {
-        csr_transpose(1.0, &self.local_op_sp(site)?)
+    pub fn make_local_op_sm(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_sp(site)?)
     }
 
-    pub fn local_op_sx(&self, site: usize) -> Result<CsrMatrix> {
-        let sp = self.local_op_sp(site)?;
-        let sm = self.local_op_sm(site)?;
+    pub fn make_local_op_sx(&self, site: usize) -> Result<CsrMatrix> {
+        let sp = self.make_local_op_sp(site)?;
+        let sm = self.make_local_op_sm(site)?;
         csr_add(0.5, &sp, 0.5, &sm)
     }
 
-    pub fn local_op_isy(&self, site: usize) -> Result<CsrMatrix> {
-        let sp = self.local_op_sp(site)?;
-        let sm = self.local_op_sm(site)?;
+    pub fn make_local_op_isy(&self, site: usize) -> Result<CsrMatrix> {
+        let sp = self.make_local_op_sp(site)?;
+        let sm = self.make_local_op_sm(site)?;
         csr_add(0.5, &sp, -0.5, &sm)
     }
 
     /// H_i = hz_i * Sz_i + d_i * (Sz_i)^2
-    pub fn local_onsite_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
-        let sz = self.local_op_sz(site)?;
+    pub fn make_local_onsite_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
+        let sz = self.make_local_op_sz(site)?;
         let hz = self.hz_list[site];
         let d = self.d_list[site];
 
@@ -213,7 +202,7 @@ impl HeisenbergModel {
     /// `total_sz` must be integer or half-integer.
     /// Returns 0 if the sector is forbidden for the given local spins.
     #[pyo3(text_signature = "(self, total_sz)")]
-    pub fn calc_dim_u1_sector(&self, total_sz: f64) -> Result<u128> {
+    pub fn calc_dim_u1_sector(&self, total_sz: f64) -> Result<i128> {
         let two_m_f = 2.0 * total_sz;
         let two_m = two_m_f.round() as i32;
 
@@ -237,11 +226,11 @@ impl HeisenbergModel {
         let offset = -min_two_m;
         let size = (max_two_m - min_two_m + 1) as usize;
 
-        let mut dp = vec![0u128; size];
+        let mut dp = vec![0i128; size];
         dp[offset as usize] = 1;
 
         for &two_s in self.two_s_list.iter() {
-            let mut next = vec![0u128; size];
+            let mut next = vec![0i128; size];
 
             for two_m_site in (-two_s..=two_s).step_by(2) {
                 for m in min_two_m..=max_two_m {
@@ -382,7 +371,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sz = m.local_op_sz(0).unwrap();
+        let sz = m.make_local_op_sz(0).unwrap();
         assert_eq!(sz.row_dim, 2);
         assert_eq!(sz.col_dim, 2);
         assert_eq!(sz.rows, vec![0, 1, 2]);
@@ -400,7 +389,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sz = m.local_op_sz(0).unwrap();
+        let sz = m.make_local_op_sz(0).unwrap();
         assert_eq!(sz.row_dim, 3);
         assert_eq!(sz.col_dim, 3);
         assert_eq!(sz.rows, vec![0, 1, 1, 2]);
@@ -423,7 +412,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sp = m.local_op_sp(0).unwrap();
+        let sp = m.make_local_op_sp(0).unwrap();
         assert_eq!(sp.row_dim, 2);
         assert_eq!(sp.col_dim, 2);
         assert_eq!(sp.rows, vec![0, 1, 1]);
@@ -440,7 +429,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sp = m.local_op_sp(0).unwrap();
+        let sp = m.make_local_op_sp(0).unwrap();
         assert_eq!(sp.row_dim, 3);
         assert_eq!(sp.col_dim, 3);
         assert_eq!(sp.rows, vec![0, 1, 2, 2]);
@@ -463,7 +452,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sm = m.local_op_sm(0).unwrap();
+        let sm = m.make_local_op_sm(0).unwrap();
         assert_eq!(sm.row_dim, 2);
         assert_eq!(sm.col_dim, 2);
         assert_eq!(sm.rows, vec![0, 0, 1]);
@@ -480,7 +469,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sm = m.local_op_sm(0).unwrap();
+        let sm = m.make_local_op_sm(0).unwrap();
         assert_eq!(sm.row_dim, 3);
         assert_eq!(sm.col_dim, 3);
         assert_eq!(sm.rows, vec![0, 0, 1, 2]);
@@ -503,7 +492,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sx = m.local_op_sx(0).unwrap();
+        let sx = m.make_local_op_sx(0).unwrap();
         assert_eq!(sx.row_dim, 2);
         assert_eq!(sx.col_dim, 2);
         assert_eq!(sx.rows, vec![0, 1, 2]);
@@ -519,7 +508,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let sx = m.local_op_sx(0).unwrap();
+        let sx = m.make_local_op_sx(0).unwrap();
         assert_eq!(sx.row_dim, 3);
         assert_eq!(sx.col_dim, 3);
         assert_eq!(sx.rows, vec![0, 1, 3, 4]);
@@ -544,7 +533,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let isy = m.local_op_isy(0).unwrap();
+        let isy = m.make_local_op_isy(0).unwrap();
         assert_eq!(isy.row_dim, 2);
         assert_eq!(isy.col_dim, 2);
         assert_eq!(isy.rows, vec![0, 1, 2]);
@@ -560,7 +549,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let isy = m.local_op_isy(0).unwrap();
+        let isy = m.make_local_op_isy(0).unwrap();
         assert_eq!(isy.row_dim, 3);
         assert_eq!(isy.col_dim, 3);
         assert_eq!(isy.rows, vec![0, 1, 3, 4]);
@@ -586,7 +575,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let h = m.local_onsite_hamiltonian(0).unwrap();
+        let h = m.make_local_onsite_hamiltonian(0).unwrap();
         assert_eq!(h.row_dim, 2);
         assert_eq!(h.col_dim, 2);
         assert_eq!(h.rows, vec![0, 1, 2]);
@@ -607,7 +596,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let h = m.local_onsite_hamiltonian(0).unwrap();
+        let h = m.make_local_onsite_hamiltonian(0).unwrap();
         assert_eq!(h.row_dim, 3);
         assert_eq!(h.col_dim, 3);
         assert_eq!(h.rows, vec![0, 1, 1, 2]);
