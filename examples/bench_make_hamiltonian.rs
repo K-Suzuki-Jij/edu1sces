@@ -1,5 +1,3 @@
-// src/bin/bench_make_hamiltonian.rs
-
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -39,7 +37,7 @@ fn main() {
     println!("time to build basis = {:?}", dt);
 
     let t0 = Instant::now();
-    let h = make_heisenberg_hamiltonian_parallel(&basis, &model, lower_only, 1).unwrap();
+    let h = make_heisenberg_hamiltonian_parallel(&basis, &model, lower_only, 6).unwrap();
     let dt = t0.elapsed();
 
     println!("lower_only = {}", lower_only);

@@ -13,5 +13,5 @@ pyo3 = { version = "0.27.2", features = ["anyhow"] }
 rayon = "1.11.0"
 
 [features]
-default = ["extension-module"]
+default = []
 extension-module = ["pyo3/extension-module"]

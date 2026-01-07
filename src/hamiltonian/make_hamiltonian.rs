@@ -4,8 +4,18 @@ use rayon::prelude::*;
 use crate::basis::hilbert_basis::HilbertBasis;
 use crate::blas::CsrMatrix;
 use crate::blas::MATRIX_ZERO_EPS;
-use crate::hamiltonian::hamiltonian_element_generator::HamiltonianElementGenerator;
 use crate::hamiltonian::transition_state_holder::TransitionStateHolder;
+
+/// Generate all Hamiltonian nonzero elements for a given basis state (row).
+pub trait HamiltonianElementGenerator<Basis>: Sync {
+    /// Generate transition elements from `basis_state` and store them into `holder`.
+    fn make_elements(
+        &self,
+        basis_state: i128,
+        basis: &Basis,
+        holder: &mut TransitionStateHolder,
+    ) -> Result<()>;
+}
 
 pub fn make_hamiltonian<Basis, Generator>(
     basis: &Basis,
