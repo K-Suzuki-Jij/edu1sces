@@ -163,27 +163,31 @@ where
         row_nnz
             .par_iter_mut()
             .enumerate()
-            .try_for_each(|(row, slot)| -> Result<()> {
-                let basis_state = basis.basis_state_at(row);
-                let mut holder = make_holder();
+            .map_init(
+                || make_holder(),
+                |holder, (row, slot)| -> Result<()> {
+                    let basis_state = basis.basis_state_at(row);
 
-                generator.make_elements(basis_state, basis, &mut holder)?;
+                    holder.vals.clear();
+                    generator.make_elements(basis_state, basis, holder)?;
 
-                let mut cnt = 0;
-                for (&transition_basis, &_v) in holder.vals.iter() {
-                    let col = basis.inverse_basis_at(transition_basis)?;
-                    if !lower_only || col <= row {
+                    let mut cnt = 0;
+                    for (&transition_basis, _) in holder.vals.iter() {
+                        let col = basis.inverse_basis_at(transition_basis)?;
+                        if !lower_only || col <= row {
+                            cnt += 1;
+                        }
+                    }
+
+                    if lower_only && holder.vals.get(&basis_state).is_none() {
                         cnt += 1;
                     }
-                }
 
-                if lower_only && holder.vals.get(&basis_state).is_none() {
-                    cnt += 1; // inject diagonal zero
-                }
-
-                *slot = cnt;
-                Ok(())
-            })?;
+                    *slot = cnt;
+                    Ok(())
+                },
+            )
+            .try_for_each(|r| r)?;
 
         // ---------- prefix sum (sequential) ----------
         let mut out = CsrMatrix::new();
@@ -218,40 +222,41 @@ where
         }
 
         // ---------- pass 2: fill (parallel) ----------
-        row_slices.into_par_iter().enumerate().try_for_each(
-            |(row, (row_cols, row_vals))| -> Result<()> {
-                let basis_state = basis.basis_state_at(row);
-                let mut holder = make_holder();
+        row_slices
+            .into_par_iter()
+            .enumerate()
+            .map_init(
+                || make_holder(),
+                |holder, (row, (row_cols, row_vals))| -> Result<()> {
+                    let basis_state = basis.basis_state_at(row);
 
-                generator.make_elements(basis_state, basis, &mut holder)?;
+                    holder.vals.clear();
+                    generator.make_elements(basis_state, basis, holder)?;
 
-                let mut entries = Vec::with_capacity(row_cols.len());
+                    let mut entries = Vec::with_capacity(row_cols.len());
 
-                for (&transition_basis, &v) in holder.vals.iter() {
-                    let col = basis.inverse_basis_at(transition_basis)?;
-                    if !lower_only || col <= row {
-                        entries.push((col, v));
+                    for (&transition_basis, &v) in holder.vals.iter() {
+                        let col = basis.inverse_basis_at(transition_basis)?;
+                        if !lower_only || col <= row {
+                            entries.push((col, v));
+                        }
                     }
-                }
 
-                if lower_only && holder.vals.get(&basis_state).is_none() {
-                    entries.push((row, 0.0));
-                }
+                    if lower_only && holder.vals.get(&basis_state).is_none() {
+                        entries.push((row, 0.0));
+                    }
 
-                entries.sort_unstable_by_key(|&(col, _)| col);
+                    entries.sort_unstable_by_key(|&(col, _)| col);
 
-                if entries.len() != row_cols.len() {
-                    bail!("internal error: nnz mismatch at row={}", row);
-                }
+                    for (k, (col, v)) in entries.into_iter().enumerate() {
+                        row_cols[k] = col;
+                        row_vals[k] = v;
+                    }
 
-                for (k, (col, v)) in entries.into_iter().enumerate() {
-                    row_cols[k] = col;
-                    row_vals[k] = v;
-                }
-
-                Ok(())
-            },
-        )?;
+                    Ok(())
+                },
+            )
+            .try_for_each(|r| r)?;
 
         Ok(out)
     })
