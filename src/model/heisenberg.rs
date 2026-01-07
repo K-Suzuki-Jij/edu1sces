@@ -128,7 +128,7 @@ impl HeisenbergModel {
     }
 
     /// H_i = hz_i * Sz_i + d_i * (Sz_i)^2
-    pub fn make_local_onsite_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
+    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
         let sz = self.make_local_op_sz(site)?;
         let hz = self.hz_list[site];
         let d = self.d_list[site];
@@ -575,7 +575,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let h = m.make_local_onsite_hamiltonian(0).unwrap();
+        let h = m.make_local_hamiltonian(0).unwrap();
         assert_eq!(h.row_dim, 2);
         assert_eq!(h.col_dim, 2);
         assert_eq!(h.rows, vec![0, 1, 2]);
@@ -596,7 +596,7 @@ mod tests {
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
         };
-        let h = m.make_local_onsite_hamiltonian(0).unwrap();
+        let h = m.make_local_hamiltonian(0).unwrap();
         assert_eq!(h.row_dim, 3);
         assert_eq!(h.col_dim, 3);
         assert_eq!(h.rows, vec![0, 1, 1, 2]);

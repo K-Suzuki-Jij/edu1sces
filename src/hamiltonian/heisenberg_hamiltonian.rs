@@ -1,9 +1,11 @@
 use crate::basis::HeisenbergBasis;
-use crate::blas::{CsrMatrix, MATRIX_ZERO_EPS};
-use crate::hamiltonian::{make_intersite_elements, make_onsite_elements, TransitionStateHolder};
+use crate::blas::CsrMatrix;
+use crate::hamiltonian::{
+    make_hamiltonian_parallel, make_intersite_elements, make_onsite_elements,
+    HamiltonianElementGenerator, TransitionStateHolder,
+};
 use crate::model::HeisenbergModel;
-use anyhow::{bail, Result};
-use rayon::prelude::*;
+use anyhow::Result;
 
 #[derive(Debug)]
 struct HeisenbergLocalOps {
@@ -27,7 +29,7 @@ impl HeisenbergLocalOps {
             let sp_i = model.make_local_op_sp(site)?;
             let sm_i = model.make_local_op_sm(site)?; // transpose(sp)
 
-            let on_i = model.make_local_onsite_hamiltonian(site)?; // hz*Sz + d*Sz^2
+            let on_i = model.make_local_hamiltonian(site)?; // hz*Sz + d*Sz^2
 
             sz.push(sz_i);
             sp.push(sp_i);
@@ -44,168 +46,90 @@ impl HeisenbergLocalOps {
     }
 }
 
-fn make_hamiltonian_elements(
-    basis_state: i128,
-    basis: &HeisenbergBasis,
-    model: &HeisenbergModel,
-    local_ops: &HeisenbergLocalOps,
-    holder: &mut TransitionStateHolder,
-) {
-    holder.vals.clear();
+pub struct HeisenbergHamiltonianElementGenerator {
+    model: HeisenbergModel,
+    local_ops: HeisenbergLocalOps,
+}
 
-    // Local basis for the current input basis
-    for site in 0..model.num_sites {
-        holder.local_basis[site] = basis.find_local_basis(basis_state, site);
+impl HeisenbergHamiltonianElementGenerator {
+    pub fn new(model: HeisenbergModel) -> Result<Self> {
+        let local_ops = HeisenbergLocalOps::new(&model)?;
+        Ok(Self { model, local_ops })
     }
 
-    // Onsite terms: H_i = hz_i * Sz_i + d_i * Sz_i^2
-    for site in 0..model.num_sites {
-        make_onsite_elements(basis_state, site, &local_ops.onsite_ham[site], 1.0, holder);
-    }
-
-    // Intersite terms: Jz * Sz_i Sz_j
-    for (&(i, j), &val) in model.exchange_z.iter() {
-        make_intersite_elements(
-            basis_state,
-            i,
-            j,
-            &local_ops.sz[i],
-            &local_ops.sz[j],
-            val,
-            1.0,
-            holder,
-        );
-    }
-
-    // Intersite terms: (Jxy/2) * (Sp_i Sm_j + Sm_i Sp_j)
-    for (&(i, j), &val) in model.exchange_xy.iter() {
-        let c = 0.5 * val;
-
-        make_intersite_elements(
-            basis_state,
-            i,
-            j,
-            &local_ops.sp[i],
-            &local_ops.sm[j],
-            c,
-            1.0,
-            holder,
-        );
-
-        make_intersite_elements(
-            basis_state,
-            i,
-            j,
-            &local_ops.sm[i],
-            &local_ops.sp[j],
-            c,
-            1.0,
-            holder,
-        );
+    pub fn model(&self) -> &HeisenbergModel {
+        &self.model
     }
 }
 
-pub fn make_heisenberg_hamiltonian(
-    basis: &HeisenbergBasis,
-    model: &HeisenbergModel,
-    lower_only: bool,
-) -> Result<CsrMatrix> {
-    let dim = basis.basis.len();
-    if dim == 0 {
-        bail!("Target Hilbert space has zero dimension.");
+impl HamiltonianElementGenerator<HeisenbergBasis> for HeisenbergHamiltonianElementGenerator {
+    fn make_elements(
+        &self,
+        basis_state: i128,
+        basis: &HeisenbergBasis,
+        holder: &mut TransitionStateHolder,
+    ) -> Result<()> {
+        holder.vals.clear();
+
+        // Local basis for the current input basis
+        for site in 0..self.model.num_sites {
+            holder.local_basis[site] = basis.find_local_basis(basis_state, site);
+        }
+
+        // Onsite terms: H_i = hz_i * Sz_i + d_i * Sz_i^2
+        for site in 0..self.model.num_sites {
+            make_onsite_elements(
+                basis_state,
+                site,
+                &self.local_ops.onsite_ham[site],
+                1.0,
+                holder,
+            );
+        }
+
+        // Intersite terms: Jz * Sz_i Sz_j
+        for (&(i, j), &val) in self.model.exchange_z.iter() {
+            make_intersite_elements(
+                basis_state,
+                i,
+                j,
+                &self.local_ops.sz[i],
+                &self.local_ops.sz[j],
+                val,
+                1.0,
+                holder,
+            );
+        }
+
+        // Intersite terms: (Jxy/2) * (Sp_i Sm_j + Sm_i Sp_j)
+        for (&(i, j), &val) in self.model.exchange_xy.iter() {
+            let c = 0.5 * val;
+
+            make_intersite_elements(
+                basis_state,
+                i,
+                j,
+                &self.local_ops.sp[i],
+                &self.local_ops.sm[j],
+                c,
+                1.0,
+                holder,
+            );
+
+            make_intersite_elements(
+                basis_state,
+                i,
+                j,
+                &self.local_ops.sm[i],
+                &self.local_ops.sp[j],
+                c,
+                1.0,
+                holder,
+            );
+        }
+
+        Ok(())
     }
-
-    let local_ops = HeisenbergLocalOps::new(model)?;
-
-    let mut holder = TransitionStateHolder {
-        vals: ahash::AHashMap::new(),
-        site_base: basis.site_base.clone(),
-        local_basis: vec![0; model.num_sites],
-        zero_eps: MATRIX_ZERO_EPS,
-    };
-
-    // ---------- pass 1: count nnz ----------
-    let mut row_nnz = vec![0; dim];
-
-    for row in 0..dim {
-        let basis_state = basis.basis[row];
-        make_hamiltonian_elements(basis_state, basis, model, &local_ops, &mut holder);
-
-        let mut cnt = 0;
-        for (&transition_basis, &_val) in holder.vals.iter() {
-            let Some(&col) = basis.inverse_basis.get(&transition_basis) else {
-                bail!("transition_basis not found in inverse_basis");
-            };
-            if lower_only {
-                if col <= row {
-                    cnt += 1;
-                }
-            } else {
-                cnt += 1;
-            }
-        }
-
-        if lower_only && holder.vals.get(&basis_state).is_none() {
-            // inject diagonal zero
-            cnt += 1;
-        }
-
-        row_nnz[row] = cnt;
-    }
-
-    // prefix sum
-    let mut out = CsrMatrix::new();
-    out.row_dim = dim;
-    out.col_dim = dim;
-
-    out.rows = vec![0; dim + 1];
-    for i in 0..dim {
-        out.rows[i + 1] = out.rows[i] + row_nnz[i];
-    }
-
-    let nnz = out.rows[dim];
-    out.cols = vec![0; nnz];
-    out.vals = vec![0.0; nnz];
-
-    // ---------- pass 2: fill ----------
-    for row in 0..dim {
-        let basis_state = basis.basis[row];
-        make_hamiltonian_elements(basis_state, basis, model, &local_ops, &mut holder);
-
-        let mut entries = Vec::with_capacity(row_nnz[row]);
-        for (&transition_basis, &v) in holder.vals.iter() {
-            let Some(&col) = basis.inverse_basis.get(&transition_basis) else {
-                bail!("transition_basis not found in inverse_basis");
-            };
-            if lower_only && col > row {
-                continue;
-            }
-            entries.push((col, v));
-        }
-
-        if lower_only && holder.vals.get(&basis_state).is_none() {
-            entries.push((row, 0.0));
-        }
-
-        // Sort entries by column index
-        entries.sort_unstable_by_key(|&(col, _v)| col);
-
-        // Write entries to output CSR matrix
-        let mut write = out.rows[row];
-        for (col, v) in entries {
-            out.cols[write] = col;
-            out.vals[write] = v;
-            write += 1;
-        }
-
-        assert_eq!(
-            write,
-            out.rows[row + 1],
-            "internal error: write pointer mismatch"
-        );
-    }
-
-    Ok(out)
 }
 
 pub fn make_heisenberg_hamiltonian_parallel(
@@ -214,126 +138,8 @@ pub fn make_heisenberg_hamiltonian_parallel(
     lower_only: bool,
     num_threads: usize,
 ) -> Result<CsrMatrix> {
-    let dim = basis.basis.len();
-    if dim == 0 {
-        bail!("Target Hilbert space has zero dimension.");
-    }
-
-    let local_ops = HeisenbergLocalOps::new(model)?;
-    let make_holder = || TransitionStateHolder {
-        vals: ahash::AHashMap::new(),
-        site_base: basis.site_base.clone(),
-        local_basis: vec![0; model.num_sites],
-        zero_eps: MATRIX_ZERO_EPS,
-    };
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to build rayon thread pool: {e}"))?;
-
-    pool.install(|| -> Result<CsrMatrix> {
-        // ---------- pass 1: count nnz (parallel) ----------
-        let mut row_nnz = vec![0; dim];
-
-        row_nnz
-            .par_iter_mut()
-            .enumerate()
-            .try_for_each(|(row, slot)| -> Result<()> {
-                let basis_state = basis.basis[row];
-                let mut holder = make_holder();
-
-                make_hamiltonian_elements(basis_state, basis, model, &local_ops, &mut holder);
-
-                let mut cnt = 0;
-                for (&transition_basis, &_v) in holder.vals.iter() {
-                    let Some(&col) = basis.inverse_basis.get(&transition_basis) else {
-                        bail!("transition_basis not found in inverse_basis");
-                    };
-                    if !lower_only || col <= row {
-                        cnt += 1;
-                    }
-                }
-
-                if lower_only && holder.vals.get(&basis_state).is_none() {
-                    cnt += 1; // inject diagonal zero
-                }
-
-                *slot = cnt;
-                Ok(())
-            })?;
-
-        // ---------- prefix sum (sequential) ----------
-        let mut out = CsrMatrix::new();
-        out.row_dim = dim;
-        out.col_dim = dim;
-
-        out.rows = vec![0; dim + 1];
-        for i in 0..dim {
-            out.rows[i + 1] = out.rows[i] + row_nnz[i];
-        }
-
-        let nnz = out.rows[dim];
-        out.cols = vec![0; nnz];
-        out.vals = vec![0.0; nnz];
-
-        // Prepare per-row mutable slices for parallel fill (sequential pre-step).
-        //
-        // out.cols / out.vals are laid out contiguously according to row_nnz.
-        // Split them into per-row mutable slices in advance.
-        // Each parallel closure writes only to its own row slice.
-        let mut cols_rem = out.cols.as_mut_slice();
-        let mut vals_rem = out.vals.as_mut_slice();
-
-        let mut row_slices: Vec<(&mut [usize], &mut [f64])> = Vec::with_capacity(dim);
-        for row in 0..dim {
-            let len = row_nnz[row];
-            let (c_head, c_tail) = cols_rem.split_at_mut(len);
-            let (v_head, v_tail) = vals_rem.split_at_mut(len);
-            row_slices.push((c_head, v_head));
-            cols_rem = c_tail;
-            vals_rem = v_tail;
-        }
-
-        // ---------- pass 2: fill (parallel) ----------
-        row_slices.into_par_iter().enumerate().try_for_each(
-            |(row, (row_cols, row_vals))| -> Result<()> {
-                let basis_state = basis.basis[row];
-                let mut holder = make_holder();
-
-                make_hamiltonian_elements(basis_state, basis, model, &local_ops, &mut holder);
-
-                let mut entries = Vec::with_capacity(row_cols.len());
-
-                for (&transition_basis, &v) in holder.vals.iter() {
-                    let Some(&col) = basis.inverse_basis.get(&transition_basis) else {
-                        bail!("transition_basis not found in inverse_basis");
-                    };
-                    if !lower_only || col <= row {
-                        entries.push((col, v));
-                    }
-                }
-
-                if lower_only && holder.vals.get(&basis_state).is_none() {
-                    entries.push((row, 0.0));
-                }
-
-                entries.sort_unstable_by_key(|&(col, _)| col);
-
-                if entries.len() != row_cols.len() {
-                    bail!("internal error: nnz mismatch at row={}", row);
-                }
-                for (k, (col, v)) in entries.into_iter().enumerate() {
-                    row_cols[k] = col;
-                    row_vals[k] = v;
-                }
-
-                Ok(())
-            },
-        )?;
-
-        Ok(out)
-    })
+    let generator = HeisenbergHamiltonianElementGenerator::new(model.clone())?;
+    make_hamiltonian_parallel(basis, &generator, lower_only, num_threads)
 }
 
 #[cfg(test)]

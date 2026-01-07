@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use edu1sces::basis::HeisenbergBasis;
 use edu1sces::hamiltonian::heisenberg_hamiltonian::{
-    make_heisenberg_hamiltonian, make_heisenberg_hamiltonian_parallel,
+    make_heisenberg_hamiltonian_parallel,
 };
 use edu1sces::model::HeisenbergModel;
 
@@ -41,7 +41,7 @@ fn main() {
     println!("time to build basis = {:?}", dt);
 
     let t0 = Instant::now();
-    let h = make_heisenberg_hamiltonian_parallel(&basis, &model, lower_only, 6).unwrap();
+    let h = make_heisenberg_hamiltonian_parallel(&basis, &model, lower_only, 1).unwrap();
     let dt = t0.elapsed();
 
     println!("lower_only = {}", lower_only);

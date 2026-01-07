@@ -1,7 +1,7 @@
-use ahash::AHashMap;
-use anyhow::{bail, Result};
 use crate::basis::HilbertBasis;
 use crate::model::HeisenbergModel;
+use ahash::AHashMap;
+use anyhow::{bail, Result};
 
 #[derive(Debug, Clone)]
 pub struct HeisenbergBasis {
