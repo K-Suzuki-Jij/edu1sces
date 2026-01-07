@@ -1,6 +1,6 @@
 use ahash::AHashMap;
 use anyhow::{bail, Result};
-
+use crate::basis::HilbertBasis;
 use crate::model::HeisenbergModel;
 
 #[derive(Debug, Clone)]
@@ -142,6 +142,28 @@ impl HeisenbergBasis {
         let base = self.site_base[site];
         let local_dim = (self.model.two_s_list[site] as i128) + 1;
         ((basis / base).rem_euclid(local_dim)) as usize
+    }
+}
+
+impl HilbertBasis for HeisenbergBasis {
+    #[inline]
+    fn dim(&self) -> usize {
+        self.basis.len()
+    }
+
+    #[inline]
+    fn basis_state_at(&self, row: usize) -> i128 {
+        self.basis[row]
+    }
+
+    #[inline]
+    fn inverse_basis(&self) -> &ahash::AHashMap<i128, usize> {
+        &self.inverse_basis
+    }
+
+    #[inline]
+    fn site_base(&self) -> &[i128] {
+        &self.site_base
     }
 }
 
