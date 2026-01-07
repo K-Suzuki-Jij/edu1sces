@@ -7,6 +7,113 @@ use crate::blas::MATRIX_ZERO_EPS;
 use crate::hamiltonian::hamiltonian_element_generator::HamiltonianElementGenerator;
 use crate::hamiltonian::transition_state_holder::TransitionStateHolder;
 
+pub fn make_hamiltonian<Basis, Generator>(
+    basis: &Basis,
+    generator: &Generator,
+    lower_only: bool,
+) -> Result<CsrMatrix>
+where
+    Basis: HilbertBasis,
+    Generator: HamiltonianElementGenerator<Basis>,
+{
+    let dim = basis.dim();
+    if dim == 0 {
+        bail!("Target Hilbert space has zero dimension.");
+    }
+
+    let num_sites = basis.site_base().len();
+    if num_sites == 0 {
+        bail!("The system size is zero.");
+    }
+
+    let mut holder = TransitionStateHolder {
+        vals: ahash::AHashMap::new(),
+        site_base: basis.site_base().to_vec(),
+        local_basis: vec![0; num_sites],
+        zero_eps: MATRIX_ZERO_EPS,
+    };
+
+    // ---------- pass 1: count nnz ----------
+    let mut row_nnz = vec![0; dim];
+
+    for row in 0..dim {
+        let basis_state = basis.basis_state_at(row);
+
+        generator.make_elements(basis_state, basis, &mut holder)?;
+
+        let mut cnt = 0;
+        for (&transition_basis, &_v) in holder.vals.iter() {
+            let Some(&col) = basis.inverse_basis().get(&transition_basis) else {
+                bail!("transition_basis not found in inverse_basis");
+            };
+            if !lower_only || col <= row {
+                cnt += 1;
+            }
+        }
+
+        if lower_only && holder.vals.get(&basis_state).is_none() {
+            cnt += 1; // inject diagonal zero
+        }
+
+        row_nnz[row] = cnt;
+    }
+
+    // ---------- prefix sum ----------
+    let mut out = CsrMatrix::new();
+    out.row_dim = dim;
+    out.col_dim = dim;
+
+    out.rows = vec![0; dim + 1];
+    for i in 0..dim {
+        out.rows[i + 1] = out.rows[i] + row_nnz[i];
+    }
+
+    let nnz = out.rows[dim];
+    out.cols = vec![0; nnz];
+    out.vals = vec![0.0; nnz];
+
+    // ---------- pass 2: fill ----------
+    for row in 0..dim {
+        let basis_state = basis.basis_state_at(row);
+
+        generator.make_elements(basis_state, basis, &mut holder)?;
+
+        let mut entries = Vec::with_capacity(row_nnz[row]);
+
+        for (&transition_basis, &v) in holder.vals.iter() {
+            let Some(&col) = basis.inverse_basis().get(&transition_basis) else {
+                bail!("transition_basis not found in inverse_basis");
+            };
+            if !lower_only || col <= row {
+                entries.push((col, v));
+            }
+        }
+
+        if lower_only && holder.vals.get(&basis_state).is_none() {
+            entries.push((row, 0.0));
+        }
+
+        // Sort entries by column index
+        entries.sort_unstable_by_key(|&(col, _)| col);
+
+        // Write entries to output CSR matrix
+        let mut write = out.rows[row];
+        for (col, v) in entries {
+            out.cols[write] = col;
+            out.vals[write] = v;
+            write += 1;
+        }
+
+        assert_eq!(
+            write,
+            out.rows[row + 1],
+            "internal error: write pointer mismatch"
+        );
+    }
+
+    Ok(out)
+}
+
 pub fn make_hamiltonian_parallel<Basis, Generator>(
     basis: &Basis,
     generator: &Generator,

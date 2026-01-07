@@ -1,7 +1,7 @@
 use crate::basis::HeisenbergBasis;
 use crate::blas::CsrMatrix;
 use crate::hamiltonian::{
-    make_hamiltonian_parallel, make_intersite_elements, make_onsite_elements,
+    make_hamiltonian, make_hamiltonian_parallel, make_intersite_elements, make_onsite_elements,
     HamiltonianElementGenerator, TransitionStateHolder,
 };
 use crate::model::HeisenbergModel;
@@ -132,14 +132,30 @@ impl HamiltonianElementGenerator<HeisenbergBasis> for HeisenbergHamiltonianEleme
     }
 }
 
+pub fn make_heisenberg_hamiltonian(
+    basis: &HeisenbergBasis,
+    model: &HeisenbergModel,
+    lower_only: bool,
+) -> Result<CsrMatrix> {
+    make_hamiltonian(
+        basis,
+        &HeisenbergHamiltonianElementGenerator::new(model.clone())?,
+        lower_only,
+    )
+}
+
 pub fn make_heisenberg_hamiltonian_parallel(
     basis: &HeisenbergBasis,
     model: &HeisenbergModel,
     lower_only: bool,
     num_threads: usize,
 ) -> Result<CsrMatrix> {
-    let generator = HeisenbergHamiltonianElementGenerator::new(model.clone())?;
-    make_hamiltonian_parallel(basis, &generator, lower_only, num_threads)
+    make_hamiltonian_parallel(
+        basis,
+        &HeisenbergHamiltonianElementGenerator::new(model.clone())?,
+        lower_only,
+        num_threads,
+    )
 }
 
 #[cfg(test)]
@@ -159,16 +175,13 @@ mod tests {
         // Parameters:
         //   Jz = 1
         //   Jxy = 1
-        //   hz = [h, h] with h = 2
-        //   d  = [d, d] with d = 3
+        //   hz = [2, 2]
+        //   d  = [3, 3]
         //
-        // Onsite contribution per site:
-        //   h Sz + d Sz^2
-        //
-        // For |↓↑> and |↑↓>:
+        // Onsite contribution:
         //   Sz total = 0  -> hz term cancels
         //   Sz^2 total = 1/4 + 1/4 = 1/2
-        //   onsite = d * 1/2 = 3/2 = 1.5
+        //   onsite = d * 1/2 = 1.5
         //
         // Intersite:
         //   Sz1 Sz2 = -1/4
@@ -197,39 +210,39 @@ mod tests {
         };
 
         let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
-        assert_eq!(basis.basis.len(), 2);
 
-        let h = make_heisenberg_hamiltonian_parallel(&basis, &model, false, 2).unwrap();
+        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false).unwrap();
+        let h_par = make_heisenberg_hamiltonian_parallel(&basis, &model, false, 2).unwrap();
 
-        assert_eq!(h.row_dim, 2);
-        assert_eq!(h.col_dim, 2);
-        assert_eq!(h.rows, vec![0, 2, 4]);
+        for h in [&h_seq, &h_par] {
+            assert_eq!(h.row_dim, 2);
+            assert_eq!(h.col_dim, 2);
+            assert_eq!(h.rows, vec![0, 2, 4]);
 
-        // CSR sorted by column
-        assert_eq!(h.cols, vec![0, 1, 0, 1]);
+            // CSR is sorted by column index
+            assert_eq!(h.cols, vec![0, 1, 0, 1]);
 
-        assert!((h.vals[0] - 1.25).abs() <= tol);
-        assert!((h.vals[1] - 0.5).abs() <= tol);
-        assert!((h.vals[2] - 0.5).abs() <= tol);
-        assert!((h.vals[3] - 1.25).abs() <= tol);
+            assert!((h.vals[0] - 1.25).abs() <= tol);
+            assert!((h.vals[1] - 0.5).abs() <= tol);
+            assert!((h.vals[2] - 0.5).abs() <= tol);
+            assert!((h.vals[3] - 1.25).abs() <= tol);
 
-        assert!(h.check().is_ok());
-        assert!(h.is_symmetric(tol).unwrap());
+            assert!(h.check().is_ok());
+            assert!(h.is_symmetric(tol).unwrap());
+        }
     }
 
     #[test]
     fn ham_two_spin_half_two_sites_sz0_lower_only_with_onsite() {
         let tol = 1e-12;
 
-        // Same as full-matrix test, but store only lower triangle (col <= row).
-        //
-        // Parameters:
-        //   Jz = 1, Jxy = 1
-        //   hz = [2, 2], d = [3, 3]
+        // Same model as full-matrix test, but store only lower triangle (col <= row).
         //
         // In {|↓↑>, |↑↓>}:
-        // diagonal = (-1/4) + d*(Sz1^2+Sz2^2) = -0.25 + 3*(1/2) = 1.25
-        // offdiag  = 1/2 (only (1,0) kept in lower triangle)
+        // diagonal = -1/4 + d*(Sz1^2 + Sz2^2)
+        //          = -0.25 + 3*(1/2)
+        //          = 1.25
+        // off-diagonal = 1/2
         //
         // Expected lower-triangular CSR:
         // row 0: (0,0) = 1.25
@@ -251,28 +264,37 @@ mod tests {
         };
 
         let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
-        let h = make_heisenberg_hamiltonian_parallel(&basis, &model, true, 2).unwrap();
 
-        assert_eq!(h.row_dim, 2);
-        assert_eq!(h.col_dim, 2);
-        assert_eq!(h.rows, vec![0, 1, 3]);
-        assert_eq!(h.cols, vec![0, 0, 1]);
+        let h_seq = make_heisenberg_hamiltonian(&basis, &model, true).unwrap();
+        let h_par = make_heisenberg_hamiltonian_parallel(&basis, &model, true, 2).unwrap();
 
-        assert!((h.vals[0] - 1.25).abs() <= tol);
-        assert!((h.vals[1] - 0.5).abs() <= tol);
-        assert!((h.vals[2] - 1.25).abs() <= tol);
+        for h in [&h_seq, &h_par] {
+            assert_eq!(h.row_dim, 2);
+            assert_eq!(h.col_dim, 2);
+            assert_eq!(h.rows, vec![0, 1, 3]);
+            assert_eq!(h.cols, vec![0, 0, 1]);
 
-        assert!(h.check().is_ok());
-        assert!(!h.is_symmetric(tol).unwrap());
+            assert!((h.vals[0] - 1.25).abs() <= tol);
+            assert!((h.vals[1] - 0.5).abs() <= tol);
+            assert!((h.vals[2] - 1.25).abs() <= tol);
+
+            assert!(h.check().is_ok());
+            assert!(!h.is_symmetric(tol).unwrap());
+        }
     }
 
     #[test]
     fn ham_one_site_onsite_only_s1_total_sz_plus_one() {
         let tol = 1e-12;
 
-        // One site, S=1, total Sz = +1 sector -> 1x1 matrix.
-        // H = hz*Sz + d*Sz^2, with hz=2, d=3:
-        // Sz = +1, Sz^2 = 1 -> H = 2*1 + 3*1 = 5
+        // One site, S=1, total Sz = +1 sector
+        //
+        // H = hz*Sz + d*Sz^2
+        // hz = 2, d = 3
+        //
+        // Sz = +1, Sz^2 = 1
+        // -> H = 2*1 + 3*1 = 5
+
         let model = HeisenbergModel {
             num_sites: 1,
             two_s_list: vec![2],
@@ -283,18 +305,20 @@ mod tests {
         };
 
         let basis = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
-        assert_eq!(basis.basis.len(), 1);
 
-        let h = make_heisenberg_hamiltonian_parallel(&basis, &model, false, 2).unwrap();
+        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false).unwrap();
+        let h_par = make_heisenberg_hamiltonian_parallel(&basis, &model, false, 2).unwrap();
 
-        assert_eq!(h.row_dim, 1);
-        assert_eq!(h.col_dim, 1);
-        assert_eq!(h.rows, vec![0, 1]);
-        assert_eq!(h.cols, vec![0]);
-        assert_eq!(h.vals.len(), 1);
-        assert!((h.vals[0] - 5.0).abs() <= tol);
+        for h in [&h_seq, &h_par] {
+            assert_eq!(h.row_dim, 1);
+            assert_eq!(h.col_dim, 1);
+            assert_eq!(h.rows, vec![0, 1]);
+            assert_eq!(h.cols, vec![0]);
 
-        assert!(h.check().is_ok());
-        assert!(h.is_symmetric(tol).unwrap());
+            assert!((h.vals[0] - 5.0).abs() <= tol);
+
+            assert!(h.check().is_ok());
+            assert!(h.is_symmetric(tol).unwrap());
+        }
     }
 }

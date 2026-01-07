@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use edu1sces::basis::HeisenbergBasis;
-use edu1sces::hamiltonian::heisenberg_hamiltonian::{
-    make_heisenberg_hamiltonian_parallel,
-};
+use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian_parallel;
 use edu1sces::model::HeisenbergModel;
 
 fn build_chain_model(tow_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -> HeisenbergModel {
