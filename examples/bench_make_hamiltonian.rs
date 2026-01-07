@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use edu1sces::basis::HeisenbergBasis;
-use edu1sces::hamiltonian::heisenberg::{
+use edu1sces::hamiltonian::heisenberg_hamiltonian::{
     make_heisenberg_hamiltonian, make_heisenberg_hamiltonian_parallel,
 };
 use edu1sces::model::HeisenbergModel;

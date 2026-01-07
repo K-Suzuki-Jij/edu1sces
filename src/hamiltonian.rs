@@ -1,4 +1,4 @@
-pub mod heisenberg;
+pub mod heisenberg_hamiltonian;
 pub mod make_intersite_elements;
 pub mod make_onsite_elements;
 pub mod transition_state_holder;
