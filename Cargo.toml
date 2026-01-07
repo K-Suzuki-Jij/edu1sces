@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 ahash = "0.8.12"
 anyhow = "1.0.100"
 pyo3 = { version = "0.27.2", features = ["anyhow"] }
+rayon = "1.11.0"
 
 [features]
 default = ["extension-module"]
