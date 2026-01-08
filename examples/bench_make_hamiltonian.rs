@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use edu1sces::basis::HeisenbergBasis;
-use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian_parallel;
+use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use edu1sces::model::HeisenbergModel;
 
 fn build_chain_model(tow_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -> HeisenbergModel {
@@ -25,11 +25,11 @@ fn build_chain_model(tow_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -
 }
 
 fn main() {
-    let n = 26; // 本番サイズに変更
+    let n = 14; // 本番サイズに変更
     let total_sz = 0.0;
     let lower_only = false;
 
-    let model = build_chain_model(1, n, 1.0, 1.0, 0.3, 0.2);
+    let model = build_chain_model(3, n, 1.0, 1.0, 0.3, 0.2);
 
     let t0 = Instant::now();
     let basis = HeisenbergBasis::new(model.clone(), total_sz).unwrap();
@@ -37,7 +37,7 @@ fn main() {
     println!("time to build basis = {:?}", dt);
 
     let t0 = Instant::now();
-    let h = make_heisenberg_hamiltonian_parallel(&basis, &model, lower_only, 6).unwrap();
+    let h = make_heisenberg_hamiltonian(&basis, &model, lower_only, 4).unwrap();
     let dt = t0.elapsed();
 
     println!("lower_only = {}", lower_only);

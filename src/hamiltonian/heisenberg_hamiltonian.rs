@@ -1,8 +1,8 @@
 use crate::basis::HeisenbergBasis;
 use crate::blas::CsrMatrix;
 use crate::hamiltonian::{
-    make_hamiltonian, make_hamiltonian_parallel, make_intersite_elements, make_onsite_elements,
-    HamiltonianElementGenerator, TransitionStateHolder,
+    make_hamiltonian, make_intersite_elements, make_onsite_elements, HamiltonianElementGenerator,
+    TransitionStateHolder,
 };
 use crate::model::HeisenbergModel;
 use anyhow::Result;
@@ -136,21 +136,9 @@ pub fn make_heisenberg_hamiltonian(
     basis: &HeisenbergBasis,
     model: &HeisenbergModel,
     lower_only: bool,
-) -> Result<CsrMatrix> {
-    make_hamiltonian(
-        basis,
-        &HeisenbergHamiltonianElementGenerator::new(model.clone())?,
-        lower_only,
-    )
-}
-
-pub fn make_heisenberg_hamiltonian_parallel(
-    basis: &HeisenbergBasis,
-    model: &HeisenbergModel,
-    lower_only: bool,
     num_threads: usize,
 ) -> Result<CsrMatrix> {
-    make_hamiltonian_parallel(
+    make_hamiltonian(
         basis,
         &HeisenbergHamiltonianElementGenerator::new(model.clone())?,
         lower_only,
@@ -211,8 +199,8 @@ mod tests {
 
         let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
 
-        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false).unwrap();
-        let h_par = make_heisenberg_hamiltonian_parallel(&basis, &model, false, 2).unwrap();
+        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false, 1).unwrap();
+        let h_par = make_heisenberg_hamiltonian(&basis, &model, false, 2).unwrap();
 
         for h in [&h_seq, &h_par] {
             assert_eq!(h.row_dim, 2);
@@ -265,8 +253,8 @@ mod tests {
 
         let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
 
-        let h_seq = make_heisenberg_hamiltonian(&basis, &model, true).unwrap();
-        let h_par = make_heisenberg_hamiltonian_parallel(&basis, &model, true, 2).unwrap();
+        let h_seq = make_heisenberg_hamiltonian(&basis, &model, true, 1).unwrap();
+        let h_par = make_heisenberg_hamiltonian(&basis, &model, true, 2).unwrap();
 
         for h in [&h_seq, &h_par] {
             assert_eq!(h.row_dim, 2);
@@ -306,8 +294,8 @@ mod tests {
 
         let basis = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
 
-        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false).unwrap();
-        let h_par = make_heisenberg_hamiltonian_parallel(&basis, &model, false, 2).unwrap();
+        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false, 1).unwrap();
+        let h_par = make_heisenberg_hamiltonian(&basis, &model, false, 2).unwrap();
 
         for h in [&h_seq, &h_par] {
             assert_eq!(h.row_dim, 1);

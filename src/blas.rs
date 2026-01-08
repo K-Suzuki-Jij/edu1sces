@@ -1,4 +1,11 @@
 pub mod csr_matrix;
+pub mod matrix_vector_operation;
+pub mod vector_operation;
+pub mod dstev;
+pub mod lanczos;
 
-pub use csr_matrix::CsrMatrix;
-pub use csr_matrix::{csr_add, csr_mul, csr_transpose, MATRIX_ZERO_EPS};
+pub use csr_matrix::*;
+pub use matrix_vector_operation::*;
+pub use vector_operation::*;
+pub use dstev::*;
+pub use lanczos::*;

@@ -5,6 +5,7 @@ use crate::basis::hilbert_basis::HilbertBasis;
 use crate::blas::CsrMatrix;
 use crate::blas::MATRIX_ZERO_EPS;
 use crate::hamiltonian::transition_state_holder::TransitionStateHolder;
+use crate::utility::rayon_pool::with_pool;
 
 /// Generate all Hamiltonian nonzero elements for a given basis state (row).
 pub trait HamiltonianElementGenerator<Basis>: Sync {
@@ -18,113 +19,6 @@ pub trait HamiltonianElementGenerator<Basis>: Sync {
 }
 
 pub fn make_hamiltonian<Basis, Generator>(
-    basis: &Basis,
-    generator: &Generator,
-    lower_only: bool,
-) -> Result<CsrMatrix>
-where
-    Basis: HilbertBasis,
-    Generator: HamiltonianElementGenerator<Basis>,
-{
-    let dim = basis.dim();
-    if dim == 0 {
-        bail!("Target Hilbert space has zero dimension.");
-    }
-
-    let num_sites = basis.site_base().len();
-    if num_sites == 0 {
-        bail!("The system size is zero.");
-    }
-
-    let mut holder = TransitionStateHolder {
-        vals: ahash::AHashMap::new(),
-        site_base: basis.site_base().to_vec(),
-        local_basis: vec![0; num_sites],
-        zero_eps: MATRIX_ZERO_EPS,
-    };
-
-    // ---------- pass 1: count nnz ----------
-    let mut row_nnz = vec![0; dim];
-
-    for row in 0..dim {
-        let basis_state = basis.basis_state_at(row);
-
-        generator.make_elements(basis_state, basis, &mut holder)?;
-
-        let mut cnt = 0;
-        for (&transition_basis, &_v) in holder.vals.iter() {
-            let Some(&col) = basis.inverse_basis().get(&transition_basis) else {
-                bail!("transition_basis not found in inverse_basis");
-            };
-            if !lower_only || col <= row {
-                cnt += 1;
-            }
-        }
-
-        if lower_only && holder.vals.get(&basis_state).is_none() {
-            cnt += 1; // inject diagonal zero
-        }
-
-        row_nnz[row] = cnt;
-    }
-
-    // ---------- prefix sum ----------
-    let mut out = CsrMatrix::new();
-    out.row_dim = dim;
-    out.col_dim = dim;
-
-    out.rows = vec![0; dim + 1];
-    for i in 0..dim {
-        out.rows[i + 1] = out.rows[i] + row_nnz[i];
-    }
-
-    let nnz = out.rows[dim];
-    out.cols = vec![0; nnz];
-    out.vals = vec![0.0; nnz];
-
-    // ---------- pass 2: fill ----------
-    for row in 0..dim {
-        let basis_state = basis.basis_state_at(row);
-
-        generator.make_elements(basis_state, basis, &mut holder)?;
-
-        let mut entries = Vec::with_capacity(row_nnz[row]);
-
-        for (&transition_basis, &v) in holder.vals.iter() {
-            let Some(&col) = basis.inverse_basis().get(&transition_basis) else {
-                bail!("transition_basis not found in inverse_basis");
-            };
-            if !lower_only || col <= row {
-                entries.push((col, v));
-            }
-        }
-
-        if lower_only && holder.vals.get(&basis_state).is_none() {
-            entries.push((row, 0.0));
-        }
-
-        // Sort entries by column index
-        entries.sort_unstable_by_key(|&(col, _)| col);
-
-        // Write entries to output CSR matrix
-        let mut write = out.rows[row];
-        for (col, v) in entries {
-            out.cols[write] = col;
-            out.vals[write] = v;
-            write += 1;
-        }
-
-        assert_eq!(
-            write,
-            out.rows[row + 1],
-            "internal error: write pointer mismatch"
-        );
-    }
-
-    Ok(out)
-}
-
-pub fn make_hamiltonian_parallel<Basis, Generator>(
     basis: &Basis,
     generator: &Generator,
     lower_only: bool,
@@ -151,12 +45,7 @@ where
         zero_eps: MATRIX_ZERO_EPS,
     };
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to build rayon thread pool: {e}"))?;
-
-    pool.install(|| -> Result<CsrMatrix> {
+    with_pool(num_threads, || -> Result<CsrMatrix> {
         // ---------- pass 1: count nnz (parallel) ----------
         let mut row_nnz = vec![0; dim];
 
@@ -222,41 +111,37 @@ where
         }
 
         // ---------- pass 2: fill (parallel) ----------
-        row_slices
-            .into_par_iter()
-            .enumerate()
-            .map_init(
-                || make_holder(),
-                |holder, (row, (row_cols, row_vals))| -> Result<()> {
-                    let basis_state = basis.basis_state_at(row);
+        row_slices.into_par_iter().enumerate().try_for_each_init(
+            || make_holder(),
+            |holder, (row, (row_cols, row_vals))| -> Result<()> {
+                let basis_state = basis.basis_state_at(row);
 
-                    holder.vals.clear();
-                    generator.make_elements(basis_state, basis, holder)?;
+                holder.vals.clear();
+                generator.make_elements(basis_state, basis, holder)?;
 
-                    let mut entries = Vec::with_capacity(row_cols.len());
+                let mut entries = Vec::with_capacity(row_cols.len());
 
-                    for (&transition_basis, &v) in holder.vals.iter() {
-                        let col = basis.inverse_basis_at(transition_basis)?;
-                        if !lower_only || col <= row {
-                            entries.push((col, v));
-                        }
+                for (&transition_basis, &v) in holder.vals.iter() {
+                    let col = basis.inverse_basis_at(transition_basis)?;
+                    if !lower_only || col <= row {
+                        entries.push((col, v));
                     }
+                }
 
-                    if lower_only && holder.vals.get(&basis_state).is_none() {
-                        entries.push((row, 0.0));
-                    }
+                if lower_only && holder.vals.get(&basis_state).is_none() {
+                    entries.push((row, 0.0));
+                }
 
-                    entries.sort_unstable_by_key(|&(col, _)| col);
+                entries.sort_unstable_by_key(|&(col, _)| col);
 
-                    for (k, (col, v)) in entries.into_iter().enumerate() {
-                        row_cols[k] = col;
-                        row_vals[k] = v;
-                    }
+                for (k, (col, v)) in entries.into_iter().enumerate() {
+                    row_cols[k] = col;
+                    row_vals[k] = v;
+                }
 
-                    Ok(())
-                },
-            )
-            .try_for_each(|r| r)?;
+                Ok(())
+            },
+        )?;
 
         Ok(out)
     })

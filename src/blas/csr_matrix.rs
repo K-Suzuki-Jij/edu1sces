@@ -23,6 +23,35 @@ impl CsrMatrix {
         }
     }
 
+    /// Create a CSR matrix from a dense 2D representation.
+    /// Zero entries (exactly 0.0) are not stored.
+    pub fn from_dense(dense: &[Vec<f64>]) -> Self {
+        let row_dim = dense.len();
+        let col_dim = if row_dim > 0 { dense[0].len() } else { 0 };
+
+        let mut rows = vec![0usize];
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for row in dense {
+            for (j, &val) in row.iter().enumerate() {
+                if val != 0.0 {
+                    cols.push(j);
+                    vals.push(val);
+                }
+            }
+            rows.push(cols.len());
+        }
+
+        Self {
+            row_dim,
+            col_dim,
+            rows,
+            cols,
+            vals,
+        }
+    }
+
     pub fn check(&self) -> Result<()> {
         if self.rows.len() != self.row_dim + 1 {
             bail!("rows.len() must be row_dim + 1");
@@ -251,6 +280,41 @@ mod tests {
 
         assert!(m.check().is_ok());
         assert_eq!(m.nnz(), 0);
+    }
+
+    #[test]
+    fn from_dense_basic() {
+        let m = CsrMatrix::from_dense(&[vec![1.0, 0.0, 2.0], vec![0.0, 3.0, 0.0]]);
+
+        assert_eq!(m.row_dim, 2);
+        assert_eq!(m.col_dim, 3);
+        assert_eq!(m.rows, vec![0, 2, 3]);
+        assert_eq!(m.cols, vec![0, 2, 1]);
+        assert_eq!(m.vals, vec![1.0, 2.0, 3.0]);
+        assert!(m.check().is_ok());
+    }
+
+    #[test]
+    fn from_dense_empty() {
+        let m = CsrMatrix::from_dense(&[]);
+
+        assert_eq!(m.row_dim, 0);
+        assert_eq!(m.col_dim, 0);
+        assert_eq!(m.rows, vec![0]);
+        assert!(m.cols.is_empty());
+        assert!(m.vals.is_empty());
+    }
+
+    #[test]
+    fn from_dense_all_zeros() {
+        let m = CsrMatrix::from_dense(&[vec![0.0, 0.0], vec![0.0, 0.0]]);
+
+        assert_eq!(m.row_dim, 2);
+        assert_eq!(m.col_dim, 2);
+        assert_eq!(m.rows, vec![0, 0, 0]);
+        assert!(m.cols.is_empty());
+        assert!(m.vals.is_empty());
+        assert!(m.check().is_ok());
     }
 
     #[test]
