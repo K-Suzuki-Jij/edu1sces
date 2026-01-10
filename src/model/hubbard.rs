@@ -110,6 +110,91 @@ impl HubbardModel {
             exchange_z,
         })
     }
+
+    /// Dimension of the fixed-(N, total Sz) sector.
+    ///
+    /// Local basis:
+    /// 0 -> |vac>, 1 -> |up>, 2 -> |down>, 3 -> |up down>
+    ///
+    /// N_up = (N + 2Sz)/2, N_dn = (N - 2Sz)/2
+    #[pyo3(text_signature = "(self, num_electrons, total_sz)")]
+    pub fn calc_dim_u1_sector(&self, num_electrons: usize, total_sz: f64) -> Result<i128> {
+        // Parse total_sz as integer/half-integer -> two_m = 2*Sz (integer)
+        let two_m_f = 2.0 * total_sz;
+        let two_m = two_m_f.round() as i32;
+        if (two_m_f - two_m as f64).abs() > 1e-12 {
+            bail!("total_sz must be integer or half-integer (got {total_sz})");
+        }
+
+        let l = self.num_sites;
+        if num_electrons > 2 * l {
+            return Ok(0);
+        }
+
+        let n = num_electrons as i32;
+
+        // N_up, N_dn must be integers
+        if ((n + two_m) & 1) != 0 || ((n - two_m) & 1) != 0 {
+            return Ok(0);
+        }
+
+        let n_up_i32 = (n + two_m) / 2;
+        let n_dn_i32 = (n - two_m) / 2;
+        if n_up_i32 < 0 || n_dn_i32 < 0 {
+            return Ok(0);
+        }
+
+        let n_up = n_up_i32 as usize;
+        let n_dn = n_dn_i32 as usize;
+        if n_up > l || n_dn > l {
+            return Ok(0);
+        }
+
+        // local exact binomial C(n,k) in i128 (overflow-checked)
+        fn gcd_i128(mut a: i128, mut b: i128) -> i128 {
+            while b != 0 {
+                let r = a % b;
+                a = b;
+                b = r;
+            }
+            a.abs()
+        }
+
+        fn binom_i128(n: usize, k: usize) -> Result<i128> {
+            if k > n {
+                return Ok(0);
+            }
+            let k = k.min(n - k);
+
+            // multiplicative formula with gcd reduction
+            let mut num: i128 = 1;
+            let mut den: i128 = 1;
+            for i in 1..=k {
+                let a = (n - k + i) as i128;
+                let b = i as i128;
+
+                num = num
+                    .checked_mul(a)
+                    .ok_or_else(|| anyhow::anyhow!("i128 overflow while building binom"))?;
+                den = den
+                    .checked_mul(b)
+                    .ok_or_else(|| anyhow::anyhow!("i128 overflow while building binom"))?;
+
+                let g = gcd_i128(num, den);
+                num /= g;
+                den /= g;
+            }
+
+            debug_assert!(den == 1);
+            Ok(num)
+        }
+
+        let c_up = binom_i128(l, n_up)?;
+        let c_dn = binom_i128(l, n_dn)?;
+
+        c_up.checked_mul(c_dn)
+            .ok_or_else(|| anyhow::anyhow!("i128 overflow in dim = C(L,N_up)*C(L,N_dn)"))
+    }
 }
 
 #[cfg(test)]

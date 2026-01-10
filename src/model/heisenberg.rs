@@ -32,9 +32,6 @@ pub struct HeisenbergModel {
     /// S_i^z S_j^z
     #[pyo3(get)]
     pub exchange_z: HashMap<(usize, usize), f64>,
-
-    /// target total Sz * 2 (stored as integer for exact arithmetic)
-    pub target_total_sz2: i32,
 }
 
 impl HeisenbergModel {
@@ -51,38 +48,6 @@ impl HeisenbergModel {
             }
         }
         Ok(())
-    }
-
-    fn to_target_total_sz2(two_s_list: &[i32], target_total_sz: f64) -> Result<i32> {
-        let two_m_f = 2.0 * target_total_sz;
-        let two_m = two_m_f.round() as i32;
-        if (two_m_f - two_m as f64).abs() > 1e-12 {
-            bail!(
-                "target_total_sz must be integer or half-integer (got {})",
-                target_total_sz
-            );
-        }
-
-        let sum_two_s: i32 = two_s_list.iter().sum();
-        if ((sum_two_s - two_m) & 1) != 0 {
-            bail!(
-                "target_total_sz {} has wrong parity for given spins",
-                target_total_sz
-            );
-        }
-
-        let min_two_m: i32 = two_s_list.iter().map(|&s| -s).sum();
-        let max_two_m: i32 = two_s_list.iter().map(|&s| s).sum();
-        if two_m < min_two_m || two_m > max_two_m {
-            bail!(
-                "target_total_sz {} is out of range [{}, {}]",
-                target_total_sz,
-                min_two_m as f64 / 2.0,
-                max_two_m as f64 / 2.0
-            );
-        }
-
-        Ok(two_m)
     }
 
     pub fn make_local_op_sz(&self, site: usize) -> Result<CsrMatrix> {
@@ -175,9 +140,7 @@ impl HeisenbergModel {
 
 #[pymethods]
 impl HeisenbergModel {
-    #[pyo3(
-        text_signature = "(spin_list, hz_list, d_list, exchange_xy, exchange_z, target_total_sz)"
-    )]
+    #[pyo3(text_signature = "(spin_list, hz_list, d_list, exchange_xy, exchange_z)")]
     #[new]
     pub fn new(
         spin_list: Vec<f64>,
@@ -185,7 +148,6 @@ impl HeisenbergModel {
         d_list: Vec<f64>,
         exchange_xy: HashMap<(usize, usize), f64>,
         exchange_z: HashMap<(usize, usize), f64>,
-        target_total_sz: f64,
     ) -> Result<Self> {
         let num_sites = spin_list.len();
         if hz_list.len() != num_sites {
@@ -225,8 +187,6 @@ impl HeisenbergModel {
         Self::check_pairs("exchange_xy", num_sites, &exchange_xy)?;
         Self::check_pairs("exchange_z", num_sites, &exchange_z)?;
 
-        let target_total_sz2 = Self::to_target_total_sz2(&two_s_list, target_total_sz)?;
-
         Ok(Self {
             num_sites,
             two_s_list,
@@ -234,14 +194,7 @@ impl HeisenbergModel {
             d_list,
             exchange_xy,
             exchange_z,
-            target_total_sz2,
         })
-    }
-
-    /// Get target total Sz
-    #[getter]
-    pub fn target_total_sz(&self) -> f64 {
-        self.target_total_sz2 as f64 / 2.0
     }
 
     /// Dimension of the U(1) sector with fixed total Sz.
@@ -321,10 +274,9 @@ mod tests {
         let mut exchange_z = HashMap::new();
         exchange_z.insert((0, 1), 1.0);
 
-        let m = HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, exchange_z, 0.0).unwrap();
+        let m = HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, exchange_z).unwrap();
         assert_eq!(m.num_sites, 3);
         assert_eq!(m.two_s_list, vec![1, 2, 3]);
-        assert_eq!(m.target_total_sz2, 0);
     }
 
     #[test]
@@ -334,8 +286,7 @@ mod tests {
         let d_list = vec![0.0, 0.0];
 
         assert!(
-            HeisenbergModel::new(spins, hz_list, d_list, HashMap::new(), HashMap::new(), 0.0)
-                .is_err()
+            HeisenbergModel::new(spins, hz_list, d_list, HashMap::new(), HashMap::new()).is_err()
         );
     }
 
@@ -348,9 +299,7 @@ mod tests {
         let mut exchange_xy = HashMap::new();
         exchange_xy.insert((0, 2), 1.0);
 
-        assert!(
-            HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, HashMap::new(), 0.0).is_err()
-        );
+        assert!(HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, HashMap::new()).is_err());
     }
 
     #[test]
@@ -362,7 +311,6 @@ mod tests {
             d_list: vec![0.0, 0.0, 0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
 
         // nontrivial sector dimensions
@@ -388,7 +336,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 1, // +0.5
         };
 
         // reachable
@@ -408,81 +355,9 @@ mod tests {
             d_list: vec![0.0, 0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
 
         assert!(m.calc_dim_u1_sector(0.1).is_err());
-    }
-
-    #[test]
-    fn target_total_sz_validation() {
-        // Valid: two spin-1/2 sites with total_sz=0
-        let m = HeisenbergModel::new(
-            vec![0.5, 0.5],
-            vec![0.0, 0.0],
-            vec![0.0, 0.0],
-            HashMap::new(),
-            HashMap::new(),
-            0.0,
-        );
-        assert!(m.is_ok());
-        assert_eq!(m.unwrap().target_total_sz2, 0);
-
-        // Valid: two spin-1/2 sites with total_sz=1
-        let m = HeisenbergModel::new(
-            vec![0.5, 0.5],
-            vec![0.0, 0.0],
-            vec![0.0, 0.0],
-            HashMap::new(),
-            HashMap::new(),
-            1.0,
-        );
-        assert!(m.is_ok());
-        assert_eq!(m.unwrap().target_total_sz2, 2);
-
-        // Invalid: non-half-integer total_sz
-        let m = HeisenbergModel::new(
-            vec![0.5, 0.5],
-            vec![0.0, 0.0],
-            vec![0.0, 0.0],
-            HashMap::new(),
-            HashMap::new(),
-            0.3,
-        );
-        assert!(m.is_err());
-
-        // Invalid: wrong parity (two spin-1/2 can't have total_sz=0.5)
-        let m = HeisenbergModel::new(
-            vec![0.5, 0.5],
-            vec![0.0, 0.0],
-            vec![0.0, 0.0],
-            HashMap::new(),
-            HashMap::new(),
-            0.5,
-        );
-        assert!(m.is_err());
-
-        // Invalid: out of range (two spin-1/2 max is 1)
-        let m = HeisenbergModel::new(
-            vec![0.5, 0.5],
-            vec![0.0, 0.0],
-            vec![0.0, 0.0],
-            HashMap::new(),
-            HashMap::new(),
-            2.0,
-        );
-        assert!(m.is_err());
-
-        // Invalid: out of range (two spin-1/2 min is -1)
-        let m = HeisenbergModel::new(
-            vec![0.5, 0.5],
-            vec![0.0, 0.0],
-            vec![0.0, 0.0],
-            HashMap::new(),
-            HashMap::new(),
-            -2.0,
-        );
-        assert!(m.is_err());
     }
 
     #[test]
@@ -495,7 +370,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sz = m.make_local_op_sz(0).unwrap();
         assert_eq!(sz.row_dim, 2);
@@ -514,7 +388,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sz = m.make_local_op_sz(0).unwrap();
         assert_eq!(sz.row_dim, 3);
@@ -538,7 +411,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sp = m.make_local_op_sp(0).unwrap();
         assert_eq!(sp.row_dim, 2);
@@ -556,7 +428,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sp = m.make_local_op_sp(0).unwrap();
         assert_eq!(sp.row_dim, 3);
@@ -580,7 +451,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sm = m.make_local_op_sm(0).unwrap();
         assert_eq!(sm.row_dim, 2);
@@ -598,7 +468,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sm = m.make_local_op_sm(0).unwrap();
         assert_eq!(sm.row_dim, 3);
@@ -622,7 +491,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sx = m.make_local_op_sx(0).unwrap();
         assert_eq!(sx.row_dim, 2);
@@ -639,7 +507,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let sx = m.make_local_op_sx(0).unwrap();
         assert_eq!(sx.row_dim, 3);
@@ -665,7 +532,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let isy = m.make_local_op_isy(0).unwrap();
         assert_eq!(isy.row_dim, 2);
@@ -682,7 +548,6 @@ mod tests {
             d_list: vec![0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let isy = m.make_local_op_isy(0).unwrap();
         assert_eq!(isy.row_dim, 3);
@@ -709,7 +574,6 @@ mod tests {
             d_list: vec![3.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let h = m.make_local_hamiltonian(0).unwrap();
         assert_eq!(h.row_dim, 2);
@@ -731,7 +595,6 @@ mod tests {
             d_list: vec![3.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
-            target_total_sz2: 0,
         };
         let h = m.make_local_hamiltonian(0).unwrap();
         assert_eq!(h.row_dim, 3);

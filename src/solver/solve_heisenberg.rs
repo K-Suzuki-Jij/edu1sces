@@ -9,10 +9,11 @@ use crate::solver::{SolverParameters, SolverResult};
 /// Solve the Heisenberg model to find the ground state energy and eigenvector.
 pub fn solve_heisenberg(
     model: &HeisenbergModel,
+    target_total_sz: f64,
     params: &SolverParameters,
 ) -> Result<SolverResult> {
     // Build basis
-    let basis_obj = HeisenbergBasis::new(model.clone())?;
+    let basis_obj = HeisenbergBasis::new(model.clone(), target_total_sz)?;
     let dim = basis_obj.dim();
 
     // Build Hamiltonian
@@ -111,12 +112,11 @@ mod tests {
             vec![0.0, 0.0],
             exchange_xy,
             exchange_z,
-            0.0, // Sz=0 sector
         )
         .unwrap();
 
         let params = make_solver_params();
-        let result = solve_heisenberg(&model, &params).unwrap();
+        let result = solve_heisenberg(&model, 0.0, &params).unwrap(); // Sz=0 sector
 
         assert_eq!(result.dim, 2); // |↑↓⟩, |↓↑⟩
         assert!(
@@ -165,12 +165,11 @@ mod tests {
             vec![0.0, 0.0],
             exchange_xy,
             exchange_z,
-            0.0, // Sz=0 sector
         )
         .unwrap();
 
         let params = make_solver_params();
-        let result = solve_heisenberg(&model, &params).unwrap();
+        let result = solve_heisenberg(&model, 0.0, &params).unwrap(); // Sz=0 sector
 
         assert_eq!(result.dim, 3); // |+1,-1⟩, |0,0⟩, |-1,+1⟩
         assert!(
