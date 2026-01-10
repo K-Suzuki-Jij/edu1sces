@@ -283,4 +283,38 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn calc_dim_u1_sector_cases() {
+        let m = HubbardModel::new(
+            HashMap::new(),
+            vec![1.0; 4],
+            vec![0.0; 4],
+            vec![0.0; 4],
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        )
+        .unwrap();
+
+        // Valid cases: dim = C(L, n_up) * C(L, n_dn)
+        // L=4, n=2, Sz=0 => n_up=1, n_dn=1 => C(4,1)*C(4,1) = 16
+        assert_eq!(m.calc_dim_u1_sector(2, 0.0).unwrap(), 16);
+        // L=4, n=4, Sz=0 => n_up=2, n_dn=2 => C(4,2)*C(4,2) = 36
+        assert_eq!(m.calc_dim_u1_sector(4, 0.0).unwrap(), 36);
+        // L=4, n=2, Sz=1 => n_up=2, n_dn=0 => C(4,2)*C(4,0) = 6
+        assert_eq!(m.calc_dim_u1_sector(2, 1.0).unwrap(), 6);
+        // L=4, n=0, Sz=0 => n_up=0, n_dn=0 => 1
+        assert_eq!(m.calc_dim_u1_sector(0, 0.0).unwrap(), 1);
+        // L=4, n=8, Sz=0 => n_up=4, n_dn=4 => 1
+        assert_eq!(m.calc_dim_u1_sector(8, 0.0).unwrap(), 1);
+
+        // Zero cases (unreachable sector -> 0)
+        assert_eq!(m.calc_dim_u1_sector(9, 0.0).unwrap(), 0); // too many electrons
+        assert_eq!(m.calc_dim_u1_sector(2, 2.0).unwrap(), 0); // Sz out of range
+        assert_eq!(m.calc_dim_u1_sector(3, 0.0).unwrap(), 0); // parity mismatch
+
+        // Error case: non-half-integer Sz
+        assert!(m.calc_dim_u1_sector(2, 0.3).is_err());
+    }
 }
