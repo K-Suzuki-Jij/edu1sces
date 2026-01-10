@@ -5,7 +5,15 @@ use edu1sces::basis::{HeisenbergBasis, HilbertBasis};
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use edu1sces::model::HeisenbergModel;
 
-fn build_chain_model(two_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -> HeisenbergModel {
+fn build_chain_model(
+    two_s: i32,
+    n: usize,
+    jxy: f64,
+    jz: f64,
+    hz: f64,
+    d: f64,
+    target_total_sz2: i32,
+) -> HeisenbergModel {
     let mut exchange_xy = HashMap::new();
     let mut exchange_z = HashMap::new();
 
@@ -21,6 +29,7 @@ fn build_chain_model(two_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -
         d_list: vec![d; n],
         exchange_xy,
         exchange_z,
+        target_total_sz2,
     }
 }
 
@@ -56,14 +65,15 @@ fn main() {
     let num_iterations = 5;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
-    let model = build_chain_model(two_s, n, 1.0, 1.0, 0.3, 0.2);
+    let target_total_sz2 = (2.0_f64 * total_sz).round() as i32;
+    let model = build_chain_model(two_s, n, 1.0, 1.0, 0.3, 0.2, target_total_sz2);
 
     println!("=== make_heisenberg_hamiltonian Benchmark ===");
     println!("n={}, two_s={}, total_sz={}\n", n, two_s, total_sz);
 
     println!("Building basis...");
     let t0 = Instant::now();
-    let basis = HeisenbergBasis::new(model.clone(), total_sz).unwrap();
+    let basis = HeisenbergBasis::new(model.clone()).unwrap();
     let dt = t0.elapsed();
     println!("  dim={}, time={:?}", basis.dim(), dt);
 

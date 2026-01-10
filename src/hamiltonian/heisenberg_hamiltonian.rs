@@ -193,9 +193,10 @@ mod tests {
             d_list: vec![3.0, 3.0],
             exchange_xy,
             exchange_z,
+            target_total_sz2: 0,
         };
 
-        let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
+        let basis = HeisenbergBasis::new(model.clone()).unwrap();
 
         let h = make_heisenberg_hamiltonian(&basis, &model, 2).unwrap();
 
@@ -234,9 +235,10 @@ mod tests {
             d_list: vec![3.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
+            target_total_sz2: 2, // 1.0
         };
 
-        let basis = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
+        let basis = HeisenbergBasis::new(model.clone()).unwrap();
 
         let h = make_heisenberg_hamiltonian(&basis, &model, 2).unwrap();
 

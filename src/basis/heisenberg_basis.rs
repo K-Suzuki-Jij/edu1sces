@@ -14,11 +14,9 @@ pub struct HeisenbergBasis {
 }
 
 impl HeisenbergBasis {
-    pub fn new(model: HeisenbergModel, total_sz: f64) -> Result<Self> {
-        let total_sz2 = (2.0 * total_sz).round() as i32;
-        if ((2.0 * total_sz) - total_sz2 as f64).abs() > 1e-12 {
-            bail!("total_sz must be integer or half-integer");
-        }
+    pub fn new(model: HeisenbergModel) -> Result<Self> {
+        let total_sz2 = model.target_total_sz2;
+        let total_sz = total_sz2 as f64 / 2.0;
 
         let num_sites = model.num_sites;
         let dim = model.calc_dim_u1_sector(total_sz)?;
@@ -181,9 +179,10 @@ mod tests {
             d_list: vec![0.0, 0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
+            target_total_sz2: 0,
         };
 
-        let b = HeisenbergBasis::new(model, 0.0).unwrap();
+        let b = HeisenbergBasis::new(model).unwrap();
 
         assert_eq!(b.total_sz2, 0);
         assert_eq!(b.site_base, vec![1, 2]);
@@ -203,9 +202,10 @@ mod tests {
             d_list: vec![0.0, 0.0, 0.0],
             exchange_xy: HashMap::new(),
             exchange_z: HashMap::new(),
+            target_total_sz2: 0,
         };
 
-        let b = HeisenbergBasis::new(model, 0.0).unwrap();
+        let b = HeisenbergBasis::new(model).unwrap();
 
         assert_eq!(b.total_sz2, 0);
         assert_eq!(b.site_base, vec![1, 2, 6]);
@@ -219,20 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn non_half_integer_total_sz_is_error() {
-        let model = HeisenbergModel {
-            num_sites: 2,
-            two_s_list: vec![1, 1],
-            hz_list: vec![0.0, 0.0],
-            d_list: vec![0.0, 0.0],
-            exchange_xy: HashMap::new(),
-            exchange_z: HashMap::new(),
-        };
-
-        assert!(HeisenbergBasis::new(model, 0.1).is_err());
-    }
-
-    #[test]
     fn basis_all_up_and_all_down_two_sites_spin_half() {
         let model = HeisenbergModel {
             num_sites: 2,
@@ -241,13 +227,23 @@ mod tests {
             d_list: vec![0.0, 0.0],
             exchange_xy: std::collections::HashMap::new(),
             exchange_z: std::collections::HashMap::new(),
+            target_total_sz2: 2, // 1.0
         };
 
-        let b_up = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
+        let b_up = HeisenbergBasis::new(model.clone()).unwrap();
         assert_eq!(b_up.basis, vec![0]);
         assert_eq!(b_up.inverse_basis.get(&0).copied().unwrap(), 0);
 
-        let b_dn = HeisenbergBasis::new(model, -1.0).unwrap();
+        let model_dn = HeisenbergModel {
+            num_sites: 2,
+            two_s_list: vec![1, 1],
+            hz_list: vec![0.0, 0.0],
+            d_list: vec![0.0, 0.0],
+            exchange_xy: std::collections::HashMap::new(),
+            exchange_z: std::collections::HashMap::new(),
+            target_total_sz2: -2, // -1.0
+        };
+        let b_dn = HeisenbergBasis::new(model_dn).unwrap();
         assert_eq!(b_dn.basis, vec![3]);
         assert_eq!(b_dn.inverse_basis.get(&3).copied().unwrap(), 0);
     }
@@ -261,13 +257,23 @@ mod tests {
             d_list: vec![0.0, 0.0, 0.0],
             exchange_xy: std::collections::HashMap::new(),
             exchange_z: std::collections::HashMap::new(),
+            target_total_sz2: 4, // 2.0
         };
 
-        let b_up = HeisenbergBasis::new(model.clone(), 2.0).unwrap();
+        let b_up = HeisenbergBasis::new(model.clone()).unwrap();
         assert_eq!(b_up.basis, vec![0]);
         assert_eq!(b_up.inverse_basis.get(&0).copied().unwrap(), 0);
 
-        let b_dn = HeisenbergBasis::new(model, -2.0).unwrap();
+        let model_dn = HeisenbergModel {
+            num_sites: 3,
+            two_s_list: vec![1, 2, 1],
+            hz_list: vec![0.0, 0.0, 0.0],
+            d_list: vec![0.0, 0.0, 0.0],
+            exchange_xy: std::collections::HashMap::new(),
+            exchange_z: std::collections::HashMap::new(),
+            target_total_sz2: -4, // -2.0
+        };
+        let b_dn = HeisenbergBasis::new(model_dn).unwrap();
         assert_eq!(b_dn.basis, vec![11]);
         assert_eq!(b_dn.inverse_basis.get(&11).copied().unwrap(), 0);
     }
