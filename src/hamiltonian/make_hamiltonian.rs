@@ -106,8 +106,7 @@ where
                 let mut entries = Vec::with_capacity(row_cols.len());
 
                 for (&transition_basis, &v) in holder.vals.iter() {
-                    let col = basis.inverse_basis_at(transition_basis)?;
-                    entries.push((col, v));
+                    entries.push((basis.inverse_basis_at(transition_basis)?, v));
                 }
 
                 entries.sort_unstable_by_key(|&(col, _)| col);

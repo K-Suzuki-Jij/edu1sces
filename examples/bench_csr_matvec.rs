@@ -49,7 +49,12 @@ fn generate_sparse_csr(n: usize, density: f64) -> CsrMatrix {
     }
 }
 
-fn benchmark(m: &CsrMatrix, x: &[f64], num_threads: usize, num_iterations: usize) {
+fn benchmark(
+    m: &CsrMatrix,
+    x: &[f64],
+    num_threads: usize,
+    num_iterations: usize,
+) -> f64 {
     let n = m.row_dim;
     let pool = build_pool(num_threads).unwrap();
     let mut y = vec![0.0; n];
@@ -66,16 +71,10 @@ fn benchmark(m: &CsrMatrix, x: &[f64], num_threads: usize, num_iterations: usize
     }
     let dt = t0.elapsed();
 
-    let nnz = m.nnz();
     let avg_time_ms = dt.as_millis() as f64 / num_iterations as f64;
 
-    let y_sum: f64 = y.iter().sum();
-    println!(
-        "  threads={:2}, nnz={:12}, avg_time={:8.2}ms, y_sum={:.10e}",
-        num_threads, nnz, avg_time_ms, y_sum
-    );
-
     std::hint::black_box(y);
+    avg_time_ms
 }
 
 fn main() {
@@ -95,7 +94,18 @@ fn main() {
     let x: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
 
     println!("\n--- csr_matvec ---");
+    let mut baseline_time_ms = None;
     for &threads in &thread_counts {
-        benchmark(&m, &x, threads, num_iterations);
+        let time = benchmark(&m, &x, threads, num_iterations);
+        if let Some(base) = baseline_time_ms {
+            let speedup = base / time;
+            println!(
+                "  threads={:2}, avg_time={:8.2}ms, speedup={:.2}x",
+                threads, time, speedup
+            );
+        } else {
+            println!("  threads={:2}, avg_time={:8.2}ms", threads, time);
+            baseline_time_ms = Some(time);
+        }
     }
 }
