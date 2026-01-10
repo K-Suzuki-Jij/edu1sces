@@ -21,7 +21,6 @@ pub trait HamiltonianElementGenerator<Basis>: Sync {
 pub fn make_hamiltonian<Basis, Generator>(
     basis: &Basis,
     generator: &Generator,
-    lower_only: bool,
     num_threads: usize,
 ) -> Result<CsrMatrix>
 where
@@ -55,24 +54,9 @@ where
             .map_init(
                 || make_holder(),
                 |holder, (row, slot)| -> Result<()> {
-                    let basis_state = basis.basis_state_at(row);
-
                     holder.vals.clear();
-                    generator.make_elements(basis_state, basis, holder)?;
-
-                    let mut cnt = 0;
-                    for (&transition_basis, _) in holder.vals.iter() {
-                        let col = basis.inverse_basis_at(transition_basis)?;
-                        if !lower_only || col <= row {
-                            cnt += 1;
-                        }
-                    }
-
-                    if lower_only && holder.vals.get(&basis_state).is_none() {
-                        cnt += 1;
-                    }
-
-                    *slot = cnt;
+                    generator.make_elements(basis.basis_state_at(row), basis, holder)?;
+                    *slot = holder.vals.len();
                     Ok(())
                 },
             )
@@ -123,13 +107,7 @@ where
 
                 for (&transition_basis, &v) in holder.vals.iter() {
                     let col = basis.inverse_basis_at(transition_basis)?;
-                    if !lower_only || col <= row {
-                        entries.push((col, v));
-                    }
-                }
-
-                if lower_only && holder.vals.get(&basis_state).is_none() {
-                    entries.push((row, 0.0));
+                    entries.push((col, v));
                 }
 
                 entries.sort_unstable_by_key(|&(col, _)| col);

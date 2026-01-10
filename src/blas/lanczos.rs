@@ -1,47 +1,18 @@
 use anyhow::{bail, Result};
 use rand::Rng;
-use rayon::ThreadPool;
 
-use crate::blas::CsrMatrix;
-use crate::blas::vector_operation;
-use crate::blas::matrix_vector_operation;
-use crate::utility::rayon_pool::build_pool;
 use crate::blas::lapack_dstev;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MatType {
-    /// Symmetric matrix stored in CSR with LOWER triangle only.
-    SymLower,
-    /// General CSR matrix.
-    General,
-}
+use crate::blas::matrix_vector_operation;
+use crate::blas::vector_operation;
+use crate::blas::CsrMatrix;
+use crate::utility::rayon_pool::build_pool;
 
 #[derive(Debug, Clone)]
 pub struct DiagParam {
     pub diag_acc: f64,
     pub diag_min_step: usize,
     pub diag_max_step: usize,
-    pub mat_type: MatType,
     pub calc_vec: bool,
-}
-
-fn matvec_inplace(
-    pool: &ThreadPool,
-    m: &CsrMatrix,
-    x: &[f64],
-    y: &mut [f64],
-    shift: f64,
-    mat_type: MatType,
-    y_locals: &mut [Vec<f64>],
-) -> Result<()> {
-    match mat_type {
-        MatType::General => {
-            matrix_vector_operation::csr_matvec(pool, y, m, x, shift)
-        }
-        MatType::SymLower => {
-            matrix_vector_operation::csr_sym_lower_matvec(pool, m, x, shift, y, y_locals)
-        }
-    }
 }
 
 /// Lanczos method (smallest eigenvalue / optionally eigenvector).
@@ -90,13 +61,6 @@ pub fn lanczos(
     // ----- build pool once -----
     let pool = build_pool(num_threads)?;
 
-    // For SymLower matvec: y_locals must be [p_threads][n]
-    let p_threads = pool.current_num_threads();
-    let mut y_locals: Vec<Vec<f64>> = Vec::new();
-    if param.mat_type == MatType::SymLower {
-        y_locals = (0..p_threads).map(|_| vec![0.0; n]).collect();
-    }
-
     // ----- work vectors -----
     let mut v0 = vec![0.0; n];
     let mut v1 = vec![0.0; n];
@@ -112,29 +76,25 @@ pub fn lanczos(
 
     // LAPACK DSTE V work buffers (max size, reused; only first `k` used each call)
     let mut d_work = vec![0.0; max_step];
-    let mut e_work = if max_step >= 2 { vec![0.0; max_step - 1] } else { Vec::new() };
+    let mut e_work = if max_step >= 2 {
+        vec![0.0; max_step - 1]
+    } else {
+        Vec::new()
+    };
     let mut z_work = vec![0.0; max_step * max_step];
     let mut work = vec![0.0; 2 * max_step];
 
     // ----- set initial vector (random) -----
     {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for i in 0..n {
-            v0[i] = rng.gen_range(-1.0..=1.0);
+            v0[i] = rng.random_range(-1.0..=1.0);
         }
     }
     vector_operation::normalize(&pool, &mut v0)?;
 
     // v1 = M * v0
-    matvec_inplace(
-        &pool,
-        m,
-        &v0,
-        &mut v1,
-        0.0,
-        param.mat_type,
-        &mut y_locals,
-    )?;
+    matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v0, 0.0)?;
 
     // diag[0] = <v0, v1>
     diag[0] = vector_operation::dot(&pool, &v0, &v1)?;
@@ -157,15 +117,7 @@ pub fn lanczos(
         vector_operation::normalize(&pool, &mut v2)?;
 
         // v1 = M * v2
-        matvec_inplace(
-            &pool,
-            m,
-            &v2,
-            &mut v1,
-            0.0,
-            param.mat_type,
-            &mut y_locals,
-        )?;
+        matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v2, 0.0)?;
 
         // diag[step] = <v2, v1>
         diag[step] = vector_operation::dot(&pool, &v2, &v1)?;
@@ -214,9 +166,9 @@ pub fn lanczos(
 
         // Reinitialize v0 random, out_vec = 0
         {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             for i in 0..n {
-                v0[i] = rng.gen_range(-1.0..=1.0);
+                v0[i] = rng.random_range(-1.0..=1.0);
                 out_vec[i] = 0.0;
             }
         }
@@ -229,15 +181,7 @@ pub fn lanczos(
         vector_operation::axpy(&pool, out_vec, temp_eig_vec[0], &v0)?;
 
         // v1 = M * v0
-        matvec_inplace(
-            &pool,
-            m,
-            &v0,
-            &mut v1,
-            0.0,
-            param.mat_type,
-            &mut y_locals,
-        )?;
+        matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v0, 0.0)?;
 
         // v1 -= diag[0] * v0
         vector_operation::axpy(&pool, &mut v1, -diag[0], &v0)?;
@@ -251,15 +195,7 @@ pub fn lanczos(
             vector_operation::axpy(&pool, out_vec, temp_eig_vec[step], &v2)?;
 
             // v1 = M * v2
-            matvec_inplace(
-                &pool,
-                m,
-                &v2,
-                &mut v1,
-                0.0,
-                param.mat_type,
-                &mut y_locals,
-            )?;
+            matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v2, 0.0)?;
 
             // v1 -= diag[step] * v2 + off[step-1] * v0
             vector_operation::axpy(&pool, &mut v1, -diag[step], &v2)?;

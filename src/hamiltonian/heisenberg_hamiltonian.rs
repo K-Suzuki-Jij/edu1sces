@@ -135,13 +135,11 @@ impl HamiltonianElementGenerator<HeisenbergBasis> for HeisenbergHamiltonianEleme
 pub fn make_heisenberg_hamiltonian(
     basis: &HeisenbergBasis,
     model: &HeisenbergModel,
-    lower_only: bool,
     num_threads: usize,
 ) -> Result<CsrMatrix> {
     make_hamiltonian(
         basis,
         &HeisenbergHamiltonianElementGenerator::new(model.clone())?,
-        lower_only,
         num_threads,
     )
 }
@@ -152,7 +150,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn ham_two_spin_half_two_sites_sz0_full_matrix_with_onsite() {
+    fn ham_two_spin_half_two_sites_sz0_with_onsite() {
         let tol = 1e-12;
 
         // Two sites, S=1/2 each, total Sz = 0 sector
@@ -199,76 +197,22 @@ mod tests {
 
         let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
 
-        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false, 1).unwrap();
-        let h_par = make_heisenberg_hamiltonian(&basis, &model, false, 2).unwrap();
+        let h = make_heisenberg_hamiltonian(&basis, &model, 2).unwrap();
 
-        for h in [&h_seq, &h_par] {
-            assert_eq!(h.row_dim, 2);
-            assert_eq!(h.col_dim, 2);
-            assert_eq!(h.rows, vec![0, 2, 4]);
+        assert_eq!(h.row_dim, 2);
+        assert_eq!(h.col_dim, 2);
+        assert_eq!(h.rows, vec![0, 2, 4]);
 
-            // CSR is sorted by column index
-            assert_eq!(h.cols, vec![0, 1, 0, 1]);
+        // CSR is sorted by column index
+        assert_eq!(h.cols, vec![0, 1, 0, 1]);
 
-            assert!((h.vals[0] - 1.25).abs() <= tol);
-            assert!((h.vals[1] - 0.5).abs() <= tol);
-            assert!((h.vals[2] - 0.5).abs() <= tol);
-            assert!((h.vals[3] - 1.25).abs() <= tol);
+        assert!((h.vals[0] - 1.25).abs() <= tol);
+        assert!((h.vals[1] - 0.5).abs() <= tol);
+        assert!((h.vals[2] - 0.5).abs() <= tol);
+        assert!((h.vals[3] - 1.25).abs() <= tol);
 
-            assert!(h.check().is_ok());
-            assert!(h.is_symmetric(tol).unwrap());
-        }
-    }
-
-    #[test]
-    fn ham_two_spin_half_two_sites_sz0_lower_only_with_onsite() {
-        let tol = 1e-12;
-
-        // Same model as full-matrix test, but store only lower triangle (col <= row).
-        //
-        // In {|↓↑>, |↑↓>}:
-        // diagonal = -1/4 + d*(Sz1^2 + Sz2^2)
-        //          = -0.25 + 3*(1/2)
-        //          = 1.25
-        // off-diagonal = 1/2
-        //
-        // Expected lower-triangular CSR:
-        // row 0: (0,0) = 1.25
-        // row 1: (1,0) = 0.5, (1,1) = 1.25
-
-        let mut exchange_xy = HashMap::new();
-        exchange_xy.insert((0, 1), 1.0);
-
-        let mut exchange_z = HashMap::new();
-        exchange_z.insert((0, 1), 1.0);
-
-        let model = HeisenbergModel {
-            num_sites: 2,
-            two_s_list: vec![1, 1],
-            hz_list: vec![2.0, 2.0],
-            d_list: vec![3.0, 3.0],
-            exchange_xy,
-            exchange_z,
-        };
-
-        let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
-
-        let h_seq = make_heisenberg_hamiltonian(&basis, &model, true, 1).unwrap();
-        let h_par = make_heisenberg_hamiltonian(&basis, &model, true, 2).unwrap();
-
-        for h in [&h_seq, &h_par] {
-            assert_eq!(h.row_dim, 2);
-            assert_eq!(h.col_dim, 2);
-            assert_eq!(h.rows, vec![0, 1, 3]);
-            assert_eq!(h.cols, vec![0, 0, 1]);
-
-            assert!((h.vals[0] - 1.25).abs() <= tol);
-            assert!((h.vals[1] - 0.5).abs() <= tol);
-            assert!((h.vals[2] - 1.25).abs() <= tol);
-
-            assert!(h.check().is_ok());
-            assert!(!h.is_symmetric(tol).unwrap());
-        }
+        assert!(h.check().is_ok());
+        assert!(h.is_symmetric(tol).unwrap());
     }
 
     #[test]
@@ -294,19 +238,16 @@ mod tests {
 
         let basis = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
 
-        let h_seq = make_heisenberg_hamiltonian(&basis, &model, false, 1).unwrap();
-        let h_par = make_heisenberg_hamiltonian(&basis, &model, false, 2).unwrap();
+        let h = make_heisenberg_hamiltonian(&basis, &model, 2).unwrap();
 
-        for h in [&h_seq, &h_par] {
-            assert_eq!(h.row_dim, 1);
-            assert_eq!(h.col_dim, 1);
-            assert_eq!(h.rows, vec![0, 1]);
-            assert_eq!(h.cols, vec![0]);
+        assert_eq!(h.row_dim, 1);
+        assert_eq!(h.col_dim, 1);
+        assert_eq!(h.rows, vec![0, 1]);
+        assert_eq!(h.cols, vec![0]);
 
-            assert!((h.vals[0] - 5.0).abs() <= tol);
+        assert!((h.vals[0] - 5.0).abs() <= tol);
 
-            assert!(h.check().is_ok());
-            assert!(h.is_symmetric(tol).unwrap());
-        }
+        assert!(h.check().is_ok());
+        assert!(h.is_symmetric(tol).unwrap());
     }
 }

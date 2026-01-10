@@ -24,6 +24,3 @@ lapack-src = { version = "0.10", features = ["openblas"] }
 default = []
 extension-module = ["pyo3/extension-module"]
 
-[profile.release]
-lto = true          # リンク時最適化
-codegen-units = 1   # コード生成ユニットを1つに（最適化しやすくなる）

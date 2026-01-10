@@ -3,13 +3,13 @@ use anyhow::{bail, Result};
 /// Smallest eigenpair of symmetric tridiagonal matrix.
 /// diag: d[0..n], offdiag: e[0..n-1]
 pub fn lapack_dstev(
-    d_in: &[f64], 
-    e_in: &[f64], 
+    d_in: &[f64],
+    e_in: &[f64],
     n: usize,
-    d_work: &mut [f64],      // len >= n
-    e_work: &mut [f64],      // len >= n-1 (or 0 if n<2)
-    z_work: &mut [f64],      // len >= n*n
-    work: &mut [f64],        // len >= 2*n
+    d_work: &mut [f64], // len >= n
+    e_work: &mut [f64], // len >= n-1 (or 0 if n<2)
+    z_work: &mut [f64], // len >= n*n
+    work: &mut [f64],   // len >= 2*n
 ) -> Result<(f64, Vec<f64>)> {
     if n == 0 {
         bail!("n must be positive");
@@ -37,16 +37,7 @@ pub fn lapack_dstev(
     let mut info: i32 = 0;
 
     unsafe {
-        lapack::dstev(
-            b'V',
-            n as i32,
-            d_work,
-            e_work,
-            z_work,
-            ldz,
-            work,
-            &mut info,
-        );
+        lapack::dstev(b'V', n as i32, d_work, e_work, z_work, ldz, work, &mut info);
     }
 
     if info != 0 {
@@ -104,9 +95,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        let (eigenvalue, eigenvector) =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work)
-                .unwrap();
+        let (eigenvalue, eigenvector) = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         assert_close(eigenvalue, 5.0, TOL);
         assert_eq!(eigenvector.len(), 1);
@@ -127,9 +125,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        let (eigenvalue, eigenvector) =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work)
-                .unwrap();
+        let (eigenvalue, eigenvector) = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         assert_close(eigenvalue, 2.0, TOL);
         assert_normalized(&eigenvector, TOL);
@@ -154,9 +159,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        let (eigenvalue, eigenvector) =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work)
-                .unwrap();
+        let (eigenvalue, eigenvector) = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         assert_close(eigenvalue, -1.0, TOL);
         assert_normalized(&eigenvector, TOL);
@@ -178,9 +190,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        let (eigenvalue, eigenvector) =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work)
-                .unwrap();
+        let (eigenvalue, eigenvector) = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         assert_close(eigenvalue, 1.0, TOL);
         assert_normalized(&eigenvector, TOL);
@@ -203,9 +222,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        let (eigenvalue, eigenvector) =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work)
-                .unwrap();
+        let (eigenvalue, eigenvector) = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         // Verify eigenvector is normalized
         assert_normalized(&eigenvector, TOL);
@@ -244,9 +270,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        let (eigenvalue, eigenvector) =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work)
-                .unwrap();
+        let (eigenvalue, eigenvector) = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         assert_close(eigenvalue, -1.5, TOL);
         assert_normalized(&eigenvector, TOL);
@@ -263,8 +296,15 @@ mod tests {
         let mut z_work = vec![];
         let mut work = vec![];
 
-        let result =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work);
+        let result = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        );
         assert!(result.is_err());
     }
 
@@ -279,8 +319,15 @@ mod tests {
         let mut z_work = vec![0.0; 4];
         let mut work = vec![0.0; 4];
 
-        let result =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work);
+        let result = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        );
         assert!(result.is_err());
     }
 
@@ -295,8 +342,15 @@ mod tests {
         let mut z_work = vec![0.0; 3]; // too small, needs n*n = 4
         let mut work = vec![0.0; 2 * n];
 
-        let result =
-            lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work);
+        let result = lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        );
         assert!(result.is_err());
     }
 
@@ -314,7 +368,16 @@ mod tests {
         let mut z_work = vec![0.0; n * n];
         let mut work = vec![0.0; 2 * n];
 
-        lapack_dstev(&d_in, &e_in, n, &mut d_work, &mut e_work, &mut z_work, &mut work).unwrap();
+        lapack_dstev(
+            &d_in,
+            &e_in,
+            n,
+            &mut d_work,
+            &mut e_work,
+            &mut z_work,
+            &mut work,
+        )
+        .unwrap();
 
         assert_eq!(d_in, d_in_copy);
         assert_eq!(e_in, e_in_copy);
