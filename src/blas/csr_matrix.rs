@@ -1,5 +1,7 @@
 use ahash::AHashMap;
 use anyhow::{bail, Result};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 pub const MATRIX_ZERO_EPS: f64 = 1e-13;
 
@@ -91,6 +93,45 @@ impl CsrMatrix {
 
     pub fn nnz(&self) -> usize {
         self.vals.len()
+    }
+
+    /// Generate a random dense symmetric matrix in CSR format.
+    pub fn random_dense_symmetric(n: usize, seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let mut rows = vec![0usize];
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        // Build dense symmetric matrix
+        let mut dense = vec![0.0; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let v: f64 = rng.random_range(-1.0..=1.0);
+                dense[i * n + j] = v;
+                dense[j * n + i] = v;
+            }
+        }
+
+        // Convert to CSR
+        for i in 0..n {
+            for j in 0..n {
+                let v = dense[i * n + j];
+                if v.abs() > 1e-15 {
+                    cols.push(j);
+                    vals.push(v);
+                }
+            }
+            rows.push(cols.len());
+        }
+
+        Self {
+            row_dim: n,
+            col_dim: n,
+            rows,
+            cols,
+            vals,
+        }
     }
 
     /// Returns whether this CSR matrix is symmetric within tolerance `tol`.
@@ -319,7 +360,7 @@ mod tests {
 
     #[test]
     fn check_accepts_valid_nonempty_csr() {
-        // 2 x 3 行列
+        // 2 x 3 matrix
         // row 0: col 0, 2
         // row 1: col 1
         let m = CsrMatrix {
