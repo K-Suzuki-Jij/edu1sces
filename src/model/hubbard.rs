@@ -1,3 +1,4 @@
+use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
 use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ pub struct HubbardModel {
     pub mu_list: Vec<f64>,
 
     /// Zeeman field along z, length = num_sites
-    /// couples to (n_up - n_down) (equivalently 2 Sz)
+    /// couples to Sz = (n_up - n_down) / 2
     #[pyo3(get)]
     pub hz_list: Vec<f64>,
 
@@ -56,6 +57,123 @@ impl HubbardModel {
             }
         }
         Ok(())
+    }
+
+    // =========================================================================
+    // Local operators (4x4 matrices on local Fock space)
+    //
+    // Local basis:
+    //   0 -> |vac>     (n_up=0, n_down=0)
+    //   1 -> |up>      (n_up=1, n_down=0)
+    //   2 -> |down>    (n_up=0, n_down=1)
+    //   3 -> |updown>  (n_up=1, n_down=1)
+    //
+    // Fundamental operators: c_up, c_down (annihilation)
+    // All other operators are derived from these.
+    // =========================================================================
+
+    /// c_up (annihilation): |up> -> |vac>, |updown> -> |down>
+    /// With fermion sign: c_up |updown> = +|down> (up is first)
+    pub fn make_local_op_c_up(&self) -> CsrMatrix {
+        // row 0 (|vac>):  c_up |up> = |vac>      => col=1, val=1
+        // row 2 (|down>): c_up |updown> = |down> => col=3, val=1
+        CsrMatrix {
+            row_dim: 4,
+            col_dim: 4,
+            rows: vec![0, 1, 1, 2, 2],
+            cols: vec![1, 3],
+            vals: vec![1.0, 1.0],
+        }
+    }
+
+    /// c_down (annihilation): |down> -> |vac>, |updown> -> |up>
+    /// With fermion sign: c_down |updown> = -|up> (down is second, must pass up)
+    pub fn make_local_op_c_down(&self) -> CsrMatrix {
+        // row 0 (|vac>): c_down |down> = |vac>   => col=2, val=1
+        // row 1 (|up>):  c_down |updown> = -|up> => col=3, val=-1
+        CsrMatrix {
+            row_dim: 4,
+            col_dim: 4,
+            rows: vec![0, 1, 2, 2, 2],
+            cols: vec![2, 3],
+            vals: vec![1.0, -1.0],
+        }
+    }
+
+    /// c_up^dag (creation) = transpose(c_up)
+    pub fn make_local_op_c_up_dag(&self) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_up())
+    }
+
+    /// c_down^dag (creation) = transpose(c_down)
+    pub fn make_local_op_c_down_dag(&self) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_down())
+    }
+
+    /// n_up = c_up^dag c_up
+    pub fn make_local_op_n_up(&self) -> Result<CsrMatrix> {
+        let c_up = self.make_local_op_c_up();
+        let c_up_dag = self.make_local_op_c_up_dag()?;
+        csr_mul(1.0, &c_up_dag, 1.0, &c_up)
+    }
+
+    /// n_down = c_down^dag c_down
+    pub fn make_local_op_n_down(&self) -> Result<CsrMatrix> {
+        let c_down = self.make_local_op_c_down();
+        let c_down_dag = self.make_local_op_c_down_dag()?;
+        csr_mul(1.0, &c_down_dag, 1.0, &c_down)
+    }
+
+    /// n = n_up + n_down
+    pub fn make_local_op_n(&self) -> Result<CsrMatrix> {
+        let n_up = self.make_local_op_n_up()?;
+        let n_down = self.make_local_op_n_down()?;
+        csr_add(1.0, &n_up, 1.0, &n_down)
+    }
+
+    /// Sz = (n_up - n_down) / 2
+    pub fn make_local_op_sz(&self) -> Result<CsrMatrix> {
+        let n_up = self.make_local_op_n_up()?;
+        let n_down = self.make_local_op_n_down()?;
+        csr_add(0.5, &n_up, -0.5, &n_down)
+    }
+
+    /// S+ = c_up^dag c_down
+    pub fn make_local_op_sp(&self) -> Result<CsrMatrix> {
+        let c_up_dag = self.make_local_op_c_up_dag()?;
+        let c_down = self.make_local_op_c_down();
+        csr_mul(1.0, &c_up_dag, 1.0, &c_down)
+    }
+
+    /// S- = c_down^dag c_up = transpose(S+)
+    pub fn make_local_op_sm(&self) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_sp()?)
+    }
+
+    /// Local onsite Hamiltonian:
+    /// H_i = U n_up n_down - mu (n_up + n_down) + hz Sz
+    ///     = U n_up n_down - mu (n_up + n_down) + hz (n_up - n_down) / 2
+    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
+        let u = self.u_list[site];
+        let mu = self.mu_list[site];
+        let hz = self.hz_list[site];
+
+        let n_up = self.make_local_op_n_up()?;
+        let n_down = self.make_local_op_n_down()?;
+
+        // n_up * n_down
+        let n_up_n_down = csr_mul(1.0, &n_up, 1.0, &n_down)?;
+
+        // U * n_up * n_down
+        // - mu * (n_up + n_down) = -mu * n_up - mu * n_down
+        // + hz * Sz = hz * (n_up - n_down) / 2 = (hz/2) * n_up - (hz/2) * n_down
+        // = U * n_up_n_down + (-mu + hz/2) * n_up + (-mu - hz/2) * n_down
+
+        let coeff_up = -mu + 0.5 * hz;
+        let coeff_down = -mu - 0.5 * hz;
+
+        let term1 = csr_add(u, &n_up_n_down, coeff_up, &n_up)?;
+        csr_add(1.0, &term1, coeff_down, &n_down)
     }
 }
 
@@ -316,5 +434,211 @@ mod tests {
 
         // Error case: non-half-integer Sz
         assert!(m.calc_dim_u1_sector(2, 0.3).is_err());
+    }
+
+    const MATRIX_ZERO_EPS: f64 = 1e-12;
+
+    fn make_model() -> HubbardModel {
+        HubbardModel::new(
+            HashMap::new(),
+            vec![4.0],
+            vec![1.0],
+            vec![2.0],
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn local_op_c_up() {
+        // c_up: |up> -> |vac>, |updown> -> |down>
+        // Local basis: 0=|vac>, 1=|up>, 2=|down>, 3=|updown>
+        // Matrix (row=final, col=initial):
+        //   row 0: c_up |up> = |vac>      => col=1
+        //   row 2: c_up |updown> = |down> => col=3
+        let m = make_model();
+        let c_up = m.make_local_op_c_up();
+
+        assert_eq!(c_up.row_dim, 4);
+        assert_eq!(c_up.col_dim, 4);
+        assert_eq!(c_up.rows, vec![0, 1, 1, 2, 2]);
+        assert_eq!(c_up.cols, vec![1, 3]);
+        assert_eq!(c_up.vals.len(), 2);
+        assert!((c_up.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((c_up.vals[1] - 1.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_c_down() {
+        // c_down: |down> -> |vac>, |updown> -> -|up> (fermion sign)
+        // Matrix:
+        //   row 0: c_down |down> = |vac>    => col=2, val=1
+        //   row 1: c_down |updown> = -|up>  => col=3, val=-1
+        let m = make_model();
+        let c_down = m.make_local_op_c_down();
+
+        assert_eq!(c_down.row_dim, 4);
+        assert_eq!(c_down.col_dim, 4);
+        assert_eq!(c_down.rows, vec![0, 1, 2, 2, 2]);
+        assert_eq!(c_down.cols, vec![2, 3]);
+        assert_eq!(c_down.vals.len(), 2);
+        assert!((c_down.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((c_down.vals[1] - (-1.0)).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_c_up_dag() {
+        // c_up^dag: |vac> -> |up>, |down> -> |updown>
+        // Matrix:
+        //   row 1: c_up^dag |vac> = |up>       => col=0
+        //   row 3: c_up^dag |down> = |updown>  => col=2
+        let m = make_model();
+        let c_up_dag = m.make_local_op_c_up_dag().unwrap();
+
+        assert_eq!(c_up_dag.row_dim, 4);
+        assert_eq!(c_up_dag.col_dim, 4);
+        assert_eq!(c_up_dag.rows, vec![0, 0, 1, 1, 2]);
+        assert_eq!(c_up_dag.cols, vec![0, 2]);
+        assert_eq!(c_up_dag.vals.len(), 2);
+        assert!((c_up_dag.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((c_up_dag.vals[1] - 1.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_c_down_dag() {
+        // c_down^dag: |vac> -> |down>, |up> -> -|updown>
+        // Matrix:
+        //   row 2: c_down^dag |vac> = |down>     => col=0, val=1
+        //   row 3: c_down^dag |up> = -|updown>   => col=1, val=-1
+        let m = make_model();
+        let c_down_dag = m.make_local_op_c_down_dag().unwrap();
+
+        assert_eq!(c_down_dag.row_dim, 4);
+        assert_eq!(c_down_dag.col_dim, 4);
+        assert_eq!(c_down_dag.rows, vec![0, 0, 0, 1, 2]);
+        assert_eq!(c_down_dag.cols, vec![0, 1]);
+        assert_eq!(c_down_dag.vals.len(), 2);
+        assert!((c_down_dag.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((c_down_dag.vals[1] - (-1.0)).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_n_up() {
+        // n_up = c_up^dag c_up: diagonal
+        // n_up[0]=0, n_up[1]=1, n_up[2]=0, n_up[3]=1
+        let m = make_model();
+        let n_up = m.make_local_op_n_up().unwrap();
+
+        assert_eq!(n_up.row_dim, 4);
+        assert_eq!(n_up.col_dim, 4);
+        assert_eq!(n_up.rows, vec![0, 0, 1, 1, 2]);
+        assert_eq!(n_up.cols, vec![1, 3]);
+        assert_eq!(n_up.vals.len(), 2);
+        assert!((n_up.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((n_up.vals[1] - 1.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_n_down() {
+        // n_down = c_down^dag c_down: diagonal
+        // n_down[0]=0, n_down[1]=0, n_down[2]=1, n_down[3]=1
+        let m = make_model();
+        let n_down = m.make_local_op_n_down().unwrap();
+
+        assert_eq!(n_down.row_dim, 4);
+        assert_eq!(n_down.col_dim, 4);
+        assert_eq!(n_down.rows, vec![0, 0, 0, 1, 2]);
+        assert_eq!(n_down.cols, vec![2, 3]);
+        assert_eq!(n_down.vals.len(), 2);
+        assert!((n_down.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((n_down.vals[1] - 1.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_n() {
+        // n = n_up + n_down: diagonal
+        // n[0]=0, n[1]=1, n[2]=1, n[3]=2
+        let m = make_model();
+        let n = m.make_local_op_n().unwrap();
+
+        assert_eq!(n.row_dim, 4);
+        assert_eq!(n.col_dim, 4);
+        assert_eq!(n.rows, vec![0, 0, 1, 2, 3]);
+        assert_eq!(n.cols, vec![1, 2, 3]);
+        assert_eq!(n.vals.len(), 3);
+        assert!((n.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((n.vals[1] - 1.0).abs() <= MATRIX_ZERO_EPS);
+        assert!((n.vals[2] - 2.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_sz() {
+        // Sz = (n_up - n_down) / 2: diagonal
+        // sz[0]=0, sz[1]=+0.5, sz[2]=-0.5, sz[3]=0
+        let m = make_model();
+        let sz = m.make_local_op_sz().unwrap();
+
+        assert_eq!(sz.row_dim, 4);
+        assert_eq!(sz.col_dim, 4);
+        assert_eq!(sz.rows, vec![0, 0, 1, 2, 2]);
+        assert_eq!(sz.cols, vec![1, 2]);
+        assert_eq!(sz.vals.len(), 2);
+        assert!((sz.vals[0] - 0.5).abs() <= MATRIX_ZERO_EPS);
+        assert!((sz.vals[1] - (-0.5)).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_sp() {
+        // S+ = c_up^dag c_down: |down> -> |up>
+        // Matrix:
+        //   row 1: S+ |down> = |up> => col=2, val=1
+        let m = make_model();
+        let sp = m.make_local_op_sp().unwrap();
+
+        assert_eq!(sp.row_dim, 4);
+        assert_eq!(sp.col_dim, 4);
+        assert_eq!(sp.rows, vec![0, 0, 1, 1, 1]);
+        assert_eq!(sp.cols, vec![2]);
+        assert_eq!(sp.vals.len(), 1);
+        assert!((sp.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_op_sm() {
+        // S- = c_down^dag c_up: |up> -> |down>
+        // Matrix:
+        //   row 2: S- |up> = |down> => col=1, val=1
+        let m = make_model();
+        let sm = m.make_local_op_sm().unwrap();
+
+        assert_eq!(sm.row_dim, 4);
+        assert_eq!(sm.col_dim, 4);
+        assert_eq!(sm.rows, vec![0, 0, 0, 1, 1]);
+        assert_eq!(sm.cols, vec![1]);
+        assert_eq!(sm.vals.len(), 1);
+        assert!((sm.vals[0] - 1.0).abs() <= MATRIX_ZERO_EPS);
+    }
+
+    #[test]
+    fn local_hamiltonian() {
+        // H_i = U n_up n_down - mu (n_up + n_down) + hz Sz
+        // With U=4, mu=1, hz=2:
+        //   |vac>:    0
+        //   |up>:     -mu + hz/2 = -1 + 1 = 0
+        //   |down>:   -mu - hz/2 = -1 - 1 = -2
+        //   |updown>: U - 2*mu = 4 - 2 = 2
+        // Non-zero diagonal: row 2 -> -2, row 3 -> 2
+        let m = make_model();
+        let h = m.make_local_hamiltonian(0).unwrap();
+
+        assert_eq!(h.row_dim, 4);
+        assert_eq!(h.col_dim, 4);
+        assert_eq!(h.rows, vec![0, 0, 0, 1, 2]);
+        assert_eq!(h.cols, vec![2, 3]);
+        assert_eq!(h.vals.len(), 2);
+        assert!((h.vals[0] - (-2.0)).abs() <= MATRIX_ZERO_EPS);
+        assert!((h.vals[1] - 2.0).abs() <= MATRIX_ZERO_EPS);
     }
 }

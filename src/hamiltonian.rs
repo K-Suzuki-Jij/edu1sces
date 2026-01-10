@@ -1,4 +1,5 @@
 pub mod heisenberg_hamiltonian;
+pub mod hubbard_hamiltonian;
 pub mod make_hamiltonian;
 pub mod make_intersite_elements;
 pub mod make_onsite_elements;
