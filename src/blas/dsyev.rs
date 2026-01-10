@@ -54,15 +54,15 @@ pub fn lapack_dsyev(
 
     unsafe {
         lapack::dsyev(
-            b'V',        // compute eigenvalues and eigenvectors
-            b'L',        // lower triangle stored
-            n as i32,    // matrix order
-            a_work,      // matrix A (overwritten with eigenvectors)
-            n as i32,    // leading dimension
-            w_work,      // eigenvalues output
-            work,        // workspace
-            lwork,       // workspace size
-            &mut info,   // info
+            b'V',      // compute eigenvalues and eigenvectors
+            b'L',      // lower triangle stored
+            n as i32,  // matrix order
+            a_work,    // matrix A (overwritten with eigenvectors)
+            n as i32,  // leading dimension
+            w_work,    // eigenvalues output
+            work,      // workspace
+            lwork,     // workspace size
+            &mut info, // info
         );
     }
 

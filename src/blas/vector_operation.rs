@@ -62,6 +62,20 @@ pub fn axpby(
     Ok(())
 }
 
+/// x = y + a*x (in-place update of x)
+pub fn xpay(pool: &ThreadPool, x: &mut [f64], a: f64, y: &[f64]) -> Result<()> {
+    if x.len() != y.len() {
+        bail!("dimension mismatch: x.len() != y.len()");
+    }
+
+    pool.install(|| {
+        x.par_iter_mut().zip(y.par_iter()).for_each(|(xx, yy)| {
+            *xx = *yy + a * (*xx);
+        });
+    });
+    Ok(())
+}
+
 pub fn dot(pool: &ThreadPool, x: &[f64], y: &[f64]) -> Result<f64> {
     if x.len() != y.len() {
         bail!("dimension mismatch: x.len() != y.len()");

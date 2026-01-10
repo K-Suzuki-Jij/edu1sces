@@ -65,6 +65,66 @@ pub fn csr_matvec(
     Ok(())
 }
 
+/// Compute L1 norm of eigenpair residual: ||A*x - lambda*x||_1
+/// This is computed in a single pass for efficiency.
+///
+/// # Arguments
+/// * `pool` - The thread pool for parallel execution
+/// * `m` - CSR matrix (must be square)
+/// * `x` - Eigenvector
+/// * `lambda` - Eigenvalue
+///
+/// Returns the L1 norm of (A*x - lambda*x)
+pub fn eigenpair_residual_norm1(
+    pool: &ThreadPool,
+    m: &CsrMatrix,
+    x: &[f64],
+    lambda: f64,
+) -> Result<f64> {
+    if m.row_dim != m.col_dim {
+        bail!("matrix must be square for eigenpair residual");
+    }
+    if x.len() != m.col_dim {
+        bail!("dimension mismatch: x.len() != m.col_dim");
+    }
+    if m.rows.len() != m.row_dim + 1 || m.rows[m.row_dim] != m.nnz() {
+        bail!("invalid CSR structure (rows)");
+    }
+
+    let rows_ptr = m.rows.as_ptr() as usize;
+    let cols_ptr = m.cols.as_ptr() as usize;
+    let vals_ptr = m.vals.as_ptr() as usize;
+    let x_ptr = x.as_ptr() as usize;
+
+    let norm = pool.install(|| {
+        (0..m.row_dim)
+            .into_par_iter()
+            .map(|i| {
+                unsafe {
+                    let rows = rows_ptr as *const usize;
+                    let cols = cols_ptr as *const usize;
+                    let vals = vals_ptr as *const f64;
+                    let x = x_ptr as *const f64;
+
+                    let row_start = *rows.add(i);
+                    let row_end = *rows.add(i + 1);
+
+                    let mut sum = 0.0;
+                    for p in row_start..row_end {
+                        let col = *cols.add(p);
+                        sum += *vals.add(p) * *x.add(col);
+                    }
+
+                    // |A*x[i] - lambda*x[i]|
+                    (sum - lambda * *x.add(i)).abs()
+                }
+            })
+            .sum::<f64>()
+    });
+
+    Ok(norm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

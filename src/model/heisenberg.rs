@@ -175,7 +175,9 @@ impl HeisenbergModel {
 
 #[pymethods]
 impl HeisenbergModel {
-    #[pyo3(text_signature = "(spin_list, hz_list, d_list, exchange_xy, exchange_z, target_total_sz)")]
+    #[pyo3(
+        text_signature = "(spin_list, hz_list, d_list, exchange_xy, exchange_z, target_total_sz)"
+    )]
     #[new]
     pub fn new(
         spin_list: Vec<f64>,
@@ -319,8 +321,7 @@ mod tests {
         let mut exchange_z = HashMap::new();
         exchange_z.insert((0, 1), 1.0);
 
-        let m =
-            HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, exchange_z, 0.0).unwrap();
+        let m = HeisenbergModel::new(spins, hz_list, d_list, exchange_xy, exchange_z, 0.0).unwrap();
         assert_eq!(m.num_sites, 3);
         assert_eq!(m.two_s_list, vec![1, 2, 3]);
         assert_eq!(m.target_total_sz2, 0);

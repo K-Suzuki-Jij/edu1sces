@@ -62,7 +62,7 @@ fn main() {
     let n = 10;
     let two_s = 3; // S = 3/2
     let total_sz = 0.0;
-    let num_iterations = 5;
+    let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
     let target_total_sz2 = (2.0_f64 * total_sz).round() as i32;

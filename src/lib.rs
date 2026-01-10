@@ -2,6 +2,7 @@ pub mod basis;
 pub mod blas;
 pub mod hamiltonian;
 pub mod model;
+pub mod solver;
 pub mod utility;
 
 extern crate lapack_src;

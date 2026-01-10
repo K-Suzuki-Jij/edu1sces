@@ -49,12 +49,7 @@ fn generate_sparse_csr(n: usize, density: f64) -> CsrMatrix {
     }
 }
 
-fn benchmark(
-    m: &CsrMatrix,
-    x: &[f64],
-    num_threads: usize,
-    num_iterations: usize,
-) -> f64 {
+fn benchmark(m: &CsrMatrix, x: &[f64], num_threads: usize, num_iterations: usize) -> f64 {
     let n = m.row_dim;
     let pool = build_pool(num_threads).unwrap();
     let mut y = vec![0.0; n];

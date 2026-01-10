@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use crate::blas::lapack_dstev;
 use crate::blas::lapack_dsyev;
@@ -86,7 +86,7 @@ pub fn lanczos(
 
     // Convergence monitor
     let mut temp_eig_val = vec![0.0; max_step];
-    let mut temp_eig_vec= Vec::new();
+    let mut temp_eig_vec = Vec::new();
 
     // LAPACK DSTE V work buffers (max size, reused; only first `k` used each call)
     let mut d_work = vec![0.0; max_step];
@@ -505,7 +505,14 @@ mod tests {
             let expected = out_val * out_vec[i];
             let diff = (mv[i] - expected).abs();
             let tol = 1e-6 * out_val.abs().max(1.0);
-            assert!(diff < tol, "i={}, mv={}, expected={}, diff={}", i, mv[i], expected, diff);
+            assert!(
+                diff < tol,
+                "i={}, mv={}, expected={}, diff={}",
+                i,
+                mv[i],
+                expected,
+                diff
+            );
         }
     }
 }
