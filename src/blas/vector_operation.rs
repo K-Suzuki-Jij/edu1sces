@@ -105,17 +105,65 @@ pub fn dot(pool: &ThreadPool, x: &[f64], y: &[f64]) -> Result<f64> {
         bail!("dimension mismatch: x.len() != y.len()");
     }
 
+    let n = x.len();
+    let x_ptr = x.as_ptr() as usize;
+    let y_ptr = y.as_ptr() as usize;
+
     let s = pool.install(|| {
-        x.par_iter()
-            .zip(y.par_iter())
-            .map(|(a, b)| (*a) * (*b))
+        use rayon::prelude::*;
+
+        // Determine chunk size for parallel processing
+        let num_threads = rayon::current_num_threads();
+        let chunk_size = (n + num_threads - 1) / num_threads;
+
+        (0..num_threads)
+            .into_par_iter()
+            .map(|tid| {
+                let start = tid * chunk_size;
+                if start >= n {
+                    return 0.0;
+                }
+                let end = ((tid + 1) * chunk_size).min(n);
+
+                unsafe {
+                    let x = x_ptr as *const f64;
+                    let y = y_ptr as *const f64;
+
+                    // 4-way unrolling with independent accumulators
+                    let mut sum0 = 0.0;
+                    let mut sum1 = 0.0;
+                    let mut sum2 = 0.0;
+                    let mut sum3 = 0.0;
+
+                    let len = end - start;
+                    let unroll_end = start + (len / 4) * 4;
+
+                    let mut i = start;
+                    while i < unroll_end {
+                        sum0 += *x.add(i) * *y.add(i);
+                        sum1 += *x.add(i + 1) * *y.add(i + 1);
+                        sum2 += *x.add(i + 2) * *y.add(i + 2);
+                        sum3 += *x.add(i + 3) * *y.add(i + 3);
+                        i += 4;
+                    }
+
+                    let mut sum = sum0 + sum1 + sum2 + sum3;
+                    while i < end {
+                        sum += *x.add(i) * *y.add(i);
+                        i += 1;
+                    }
+
+                    sum
+                }
+            })
             .sum()
     });
+
     Ok(s)
 }
 
 pub fn norm2(pool: &ThreadPool, x: &[f64]) -> Result<f64> {
-    let s = pool.install(|| x.par_iter().map(|v| (*v) * (*v)).sum::<f64>());
+    let s = dot(pool, x, x)?;
     Ok(s.sqrt())
 }
 

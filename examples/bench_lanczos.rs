@@ -1,12 +1,20 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use edu1sces::basis::{HeisenbergBasis, HilbertBasis};
+use edu1sces::basis::{HeisenbergBasis, HilbertBasis, HubbardBasis};
 use edu1sces::blas::{lanczos, CsrMatrix, LanczosParameters};
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
-use edu1sces::model::HeisenbergModel;
+use edu1sces::hamiltonian::hubbard_hamiltonian::make_hubbard_hamiltonian;
+use edu1sces::model::{HeisenbergModel, HubbardModel};
 
-fn build_chain_model(two_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -> HeisenbergModel {
+fn build_heisenberg_chain(
+    two_s: i32,
+    n: usize,
+    jxy: f64,
+    jz: f64,
+    hz: f64,
+    d: f64,
+) -> HeisenbergModel {
     let mut exchange_xy = HashMap::new();
     let mut exchange_z = HashMap::new();
 
@@ -20,6 +28,40 @@ fn build_chain_model(two_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -
         two_s_list: vec![two_s; n],
         hz_list: vec![hz; n],
         d_list: vec![d; n],
+        exchange_xy,
+        exchange_z,
+    }
+}
+
+fn build_hubbard_chain(
+    n: usize,
+    t: f64,
+    u: f64,
+    mu: f64,
+    hz: f64,
+    v: f64,
+    jxy: f64,
+    jz: f64,
+) -> HubbardModel {
+    let mut hopping = HashMap::new();
+    let mut density_density = HashMap::new();
+    let mut exchange_xy = HashMap::new();
+    let mut exchange_z = HashMap::new();
+
+    for i in 0..n - 1 {
+        hopping.insert((i, i + 1), t);
+        density_density.insert((i, i + 1), v);
+        exchange_xy.insert((i, i + 1), jxy);
+        exchange_z.insert((i, i + 1), jz);
+    }
+
+    HubbardModel {
+        num_sites: n,
+        hopping,
+        u_list: vec![u; n],
+        mu_list: vec![mu; n],
+        hz_list: vec![hz; n],
+        density_density,
         exchange_xy,
         exchange_z,
     }
@@ -73,28 +115,115 @@ fn benchmark_lanczos(
 }
 
 fn main() {
-    let n = 22;
-    let two_s = 1; // S = 3/2
-    let total_sz = 0.0;
+    // ========== Configuration ==========
+    let model_type = "Heisenberg"; // "Heisenberg" or "Hubbard"
+
+    // Common parameters
     let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6, 7, 8];
+    let num_threads_for_build = 6;
 
-    let model = build_chain_model(two_s, n, 1.0, 1.0, 0.3, 0.2);
+    // Heisenberg parameters
+    let heisenberg_n = 22;
+    let heisenberg_two_s = 1; // S = 1/2
+    let heisenberg_total_sz = 0.0;
+    let heisenberg_jxy = 1.0;
+    let heisenberg_jz = 1.0;
+    let heisenberg_hz = 0.3;
+    let heisenberg_d = 0.2;
+
+    // Hubbard parameters
+    let hubbard_n = 12;
+    let hubbard_num_electrons = 10;
+    let hubbard_total_sz = 0.0;
+    let hubbard_t = 1.0;
+    let hubbard_u = 4.0;
+    let hubbard_mu = 0.0;
+    let hubbard_hz = 0.0;
+    let hubbard_v = 0.5; // density-density interaction
+    let hubbard_jxy = 1.0; // exchange xy
+    let hubbard_jz = 1.0; // exchange z
+                          // ===================================
 
     println!("=== Lanczos Benchmark ===");
-    println!("n={}, two_s={}, total_sz={}\n", n, two_s, total_sz);
+    println!("Model type: {}\n", model_type);
 
-    println!("Building basis...");
-    let t0 = Instant::now();
-    let basis = HeisenbergBasis::new(model.clone(), total_sz).unwrap();
-    let dt = t0.elapsed();
-    println!("  dim={}, time={:?}", basis.dim(), dt);
+    let h = match model_type {
+        "Heisenberg" => {
+            let model = build_heisenberg_chain(
+                heisenberg_two_s,
+                heisenberg_n,
+                heisenberg_jxy,
+                heisenberg_jz,
+                heisenberg_hz,
+                heisenberg_d,
+            );
 
-    println!("Building Hamiltonian...");
-    let t0 = Instant::now();
-    let h = make_heisenberg_hamiltonian(&basis, &model, 6).unwrap();
-    let dt = t0.elapsed();
-    println!("  nnz={}, time={:?}\n", h.nnz(), dt);
+            println!(
+                "Heisenberg model: n={}, two_s={}, total_sz={}",
+                heisenberg_n, heisenberg_two_s, heisenberg_total_sz
+            );
+            println!(
+                "  jxy={}, jz={}, hz={}, d={}\n",
+                heisenberg_jxy, heisenberg_jz, heisenberg_hz, heisenberg_d
+            );
+
+            println!("Building basis...");
+            let t0 = Instant::now();
+            let basis = HeisenbergBasis::new(model.clone(), heisenberg_total_sz).unwrap();
+            let dt = t0.elapsed();
+            println!("  dim={}, time={:?}", basis.dim(), dt);
+
+            println!("Building Hamiltonian...");
+            let t0 = Instant::now();
+            let h = make_heisenberg_hamiltonian(&basis, &model, num_threads_for_build).unwrap();
+            let dt = t0.elapsed();
+            println!("  nnz={}, time={:?}\n", h.nnz(), dt);
+
+            h
+        }
+        "Hubbard" => {
+            let model = build_hubbard_chain(
+                hubbard_n,
+                hubbard_t,
+                hubbard_u,
+                hubbard_mu,
+                hubbard_hz,
+                hubbard_v,
+                hubbard_jxy,
+                hubbard_jz,
+            );
+
+            println!(
+                "Hubbard model: n={}, num_electrons={}, total_sz={}",
+                hubbard_n, hubbard_num_electrons, hubbard_total_sz
+            );
+            println!(
+                "  t={}, U={}, mu={}, hz={}",
+                hubbard_t, hubbard_u, hubbard_mu, hubbard_hz
+            );
+            println!(
+                "  V={}, Jxy={}, Jz={}\n",
+                hubbard_v, hubbard_jxy, hubbard_jz
+            );
+
+            println!("Building basis...");
+            let t0 = Instant::now();
+            let basis =
+                HubbardBasis::new(model.clone(), hubbard_num_electrons, hubbard_total_sz).unwrap();
+            let dt = t0.elapsed();
+            println!("  dim={}, time={:?}", basis.dim(), dt);
+
+            println!("Building Hamiltonian...");
+            let t0 = Instant::now();
+            let h = make_hubbard_hamiltonian(&basis, &model, num_threads_for_build).unwrap();
+            let dt = t0.elapsed();
+            println!("  nnz={}, time={:?}\n", h.nnz(), dt);
+
+            h
+        }
+        _ => panic!("Invalid model type: {}", model_type),
+    };
 
     println!("--- Lanczos ---");
     let mut baseline_time_ms = None;
