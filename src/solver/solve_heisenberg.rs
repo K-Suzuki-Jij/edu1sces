@@ -1,9 +1,9 @@
 use anyhow::Result;
 
-use crate::basis::{HeisenbergBasis, HilbertBasis};
-use crate::blas::{inverse_iteration, lanczos, LanczosParameters};
+use crate::basis::HeisenbergBasis;
 use crate::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use crate::model::HeisenbergModel;
+use crate::solver::solver_core::solve_with_basis_and_hamiltonian;
 use crate::solver::{SolverParameters, SolverResult};
 
 /// Solve the Heisenberg model to find the ground state energy and eigenvector.
@@ -12,55 +12,12 @@ pub fn solve_heisenberg(
     target_total_sz: f64,
     params: &SolverParameters,
 ) -> Result<SolverResult> {
-    // Build basis
-    let basis_obj = HeisenbergBasis::new(model.clone(), target_total_sz)?;
-    let dim = basis_obj.dim();
-
-    // Build Hamiltonian
-    let hamiltonian = make_heisenberg_hamiltonian(&basis_obj, model, params.num_threads)?;
-
-    // Prepare Lanczos parameters
-    let lanczos_params = LanczosParameters {
-        acc: params.eigenvalue_tol,
-        min_step: params.min_step,
-        max_step: params.max_step,
-        calc_eigenvec: true,
-    };
-
-    // Run Lanczos
-    let mut eigenvector = Vec::new();
-    let mut energy = 0.0;
-    lanczos(
-        &hamiltonian,
-        &mut eigenvector,
-        &mut energy,
-        &lanczos_params,
-        params.num_threads,
-    )?;
-
-    // Refine eigenvector using inverse iteration
-    inverse_iteration(
-        &hamiltonian,
-        &mut eigenvector,
-        energy,
-        &params.inverse_iteration_params,
-        params.num_threads,
-    )?;
-
-    // Extract basis data
-    let mut basis = Vec::with_capacity(dim);
-    for i in 0..dim {
-        basis.push(basis_obj.basis_state_at(i));
-    }
-    let inverse_basis = basis_obj.inverse_basis().clone();
-
-    Ok(SolverResult {
-        dim,
-        energy,
-        eigenvector,
-        basis,
-        inverse_basis,
-    })
+    let num_threads = params.num_threads;
+    solve_with_basis_and_hamiltonian(
+        || HeisenbergBasis::new(model.clone(), target_total_sz),
+        |basis| make_heisenberg_hamiltonian(basis, model, num_threads),
+        params,
+    )
 }
 
 #[cfg(test)]

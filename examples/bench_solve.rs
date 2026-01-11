@@ -3,7 +3,65 @@ use std::time::Instant;
 
 use edu1sces::blas::{ConjugateGradientParameters, InverseIterationParameters};
 use edu1sces::examples_util::{build_heisenberg_chain, build_hubbard_chain};
-use edu1sces::solver::{solve_heisenberg, solve_hubbard, SolverParameters};
+use edu1sces::solver::{solve_heisenberg, solve_hubbard, SolverParameters, SolverResult};
+
+fn make_solver_params(num_threads: usize) -> SolverParameters {
+    SolverParameters {
+        eigenvalue_tol: 1e-14,
+        min_step: 5,
+        max_step: 1000,
+        num_threads,
+        inverse_iteration_params: InverseIterationParameters {
+            diag_add: 1e-07,
+            eigenvec_tol: 1e-8,
+            max_step: 5,
+            cg_params: ConjugateGradientParameters {
+                residual_tol: 1e-12,
+                max_step: 1000,
+            },
+        },
+    }
+}
+
+fn run_benchmark<F>(thread_counts: &[usize], num_iterations: usize, mut solve: F)
+where
+    F: FnMut(&SolverParameters) -> SolverResult,
+{
+    let mut baseline_time_ms = None;
+    for &threads in thread_counts {
+        let params = make_solver_params(threads);
+
+        let t0 = Instant::now();
+        let mut result: Option<SolverResult> = None;
+        for _ in 0..num_iterations {
+            result = Some(solve(&params));
+        }
+        let dt = t0.elapsed();
+        let avg_time_ms = dt.as_millis() as f64 / num_iterations as f64;
+
+        let result = result.unwrap();
+        let final_residual = result
+            .inverse_iteration_log
+            .residual_errors
+            .last()
+            .copied()
+            .unwrap_or(result.inverse_iteration_log.initial_residual_error);
+
+        if let Some(base) = baseline_time_ms {
+            let speedup = base / avg_time_ms;
+            println!(
+                "  threads={:2}, avg_time={:8.2}ms, speedup={:.2}x, energy={:.15}, residual={:.2e}",
+                threads, avg_time_ms, speedup, result.energy, final_residual
+            );
+        } else {
+            println!(
+                "  threads={:2}, avg_time={:8.2}ms, energy={:.15}, residual={:.2e}",
+                threads, avg_time_ms, result.energy, final_residual
+            );
+            baseline_time_ms = Some(avg_time_ms);
+        }
+    }
+}
 
 fn main() {
     // Read model type from command line argument
@@ -16,7 +74,7 @@ fn main() {
 
     // ========== Configuration ==========
     // Common parameters
-    let num_iterations = 5;
+    let num_iterations = 1;
     let thread_counts = [1, 2, 3, 4, 5, 6, 7, 8];
 
     // Heisenberg parameters
@@ -65,52 +123,9 @@ fn main() {
             );
 
             println!("--- solve_heisenberg ---");
-            let mut baseline_time_ms = None;
-            for &threads in &thread_counts {
-                let params = SolverParameters {
-                    eigenvalue_tol: 1e-14,
-                    min_step: 5,
-                    max_step: 1000,
-                    num_threads: threads,
-                    inverse_iteration_params: InverseIterationParameters {
-                        diag_add: 10.0,
-                        eigenvec_tol: 1e-8,
-                        max_step: 100,
-                        cg_params: ConjugateGradientParameters {
-                            residual_tol: 1e-12,
-                            max_step: 1000,
-                        },
-                    },
-                };
-
-                // Warmup
-                for _ in 0..1 {
-                    let _ = solve_heisenberg(&model, heisenberg_total_sz, &params).unwrap();
-                }
-
-                let t0 = Instant::now();
-                let mut final_energy = 0.0;
-                for _ in 0..num_iterations {
-                    let result = solve_heisenberg(&model, heisenberg_total_sz, &params).unwrap();
-                    final_energy = result.energy;
-                }
-                let dt = t0.elapsed();
-                let avg_time_ms = dt.as_millis() as f64 / num_iterations as f64;
-
-                if let Some(base) = baseline_time_ms {
-                    let speedup = base / avg_time_ms;
-                    println!(
-                        "  threads={:2}, avg_time={:8.2}ms, speedup={:.2}x, energy={:.15}",
-                        threads, avg_time_ms, speedup, final_energy
-                    );
-                } else {
-                    println!(
-                        "  threads={:2}, avg_time={:8.2}ms, energy={:.15}",
-                        threads, avg_time_ms, final_energy
-                    );
-                    baseline_time_ms = Some(avg_time_ms);
-                }
-            }
+            run_benchmark(&thread_counts, num_iterations, |params| {
+                solve_heisenberg(&model, heisenberg_total_sz, params).unwrap()
+            });
         }
         "Hubbard" => {
             let model = build_hubbard_chain(
@@ -138,55 +153,9 @@ fn main() {
             );
 
             println!("--- solve_hubbard ---");
-            let mut baseline_time_ms = None;
-            for &threads in &thread_counts {
-                let params = SolverParameters {
-                    eigenvalue_tol: 1e-14,
-                    min_step: 5,
-                    max_step: 1000,
-                    num_threads: threads,
-                    inverse_iteration_params: InverseIterationParameters {
-                        diag_add: 10.0,
-                        eigenvec_tol: 1e-8,
-                        max_step: 100,
-                        cg_params: ConjugateGradientParameters {
-                            residual_tol: 1e-12,
-                            max_step: 1000,
-                        },
-                    },
-                };
-
-                // Warmup
-                for _ in 0..1 {
-                    let _ = solve_hubbard(&model, hubbard_num_electrons, hubbard_total_sz, &params)
-                        .unwrap();
-                }
-
-                let t0 = Instant::now();
-                let mut final_energy = 0.0;
-                for _ in 0..num_iterations {
-                    let result =
-                        solve_hubbard(&model, hubbard_num_electrons, hubbard_total_sz, &params)
-                            .unwrap();
-                    final_energy = result.energy;
-                }
-                let dt = t0.elapsed();
-                let avg_time_ms = dt.as_millis() as f64 / num_iterations as f64;
-
-                if let Some(base) = baseline_time_ms {
-                    let speedup = base / avg_time_ms;
-                    println!(
-                        "  threads={:2}, avg_time={:8.2}ms, speedup={:.2}x, energy={:.15}",
-                        threads, avg_time_ms, speedup, final_energy
-                    );
-                } else {
-                    println!(
-                        "  threads={:2}, avg_time={:8.2}ms, energy={:.15}",
-                        threads, avg_time_ms, final_energy
-                    );
-                    baseline_time_ms = Some(avg_time_ms);
-                }
-            }
+            run_benchmark(&thread_counts, num_iterations, |params| {
+                solve_hubbard(&model, hubbard_num_electrons, hubbard_total_sz, params).unwrap()
+            });
         }
         _ => {
             eprintln!("Error: Unknown model type '{}'", model_type);

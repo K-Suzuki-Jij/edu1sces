@@ -14,6 +14,12 @@ pub struct ConjugateGradientParameters {
     pub max_step: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConjugateGradientLog {
+    pub elapsed_secs: f64,
+    pub step_num: usize,
+}
+
 /// Conjugate gradient method for solving (A + shift*I) * x = y.
 ///
 /// - `a`: The coefficient matrix (must be symmetric positive definite after shift)
@@ -23,7 +29,7 @@ pub struct ConjugateGradientParameters {
 /// - `param`: Solver parameters
 /// - `num_threads`: Number of threads for parallel computation
 ///
-/// Returns the number of iterations performed.
+/// Returns `ConjugateGradientLog` containing elapsed time and step count.
 pub fn conjugate_gradient(
     a: &CsrMatrix,
     y: &[f64],
@@ -31,7 +37,8 @@ pub fn conjugate_gradient(
     shift: f64,
     param: &ConjugateGradientParameters,
     num_threads: usize,
-) -> Result<usize> {
+) -> Result<ConjugateGradientLog> {
+    let start_time = std::time::Instant::now();
     // Check input matrix
     if a.row_dim != a.col_dim || a.row_dim == 0 {
         bail!(
@@ -58,7 +65,10 @@ pub fn conjugate_gradient(
     let y_norm = vector_operation::norm2(&pool, y)?;
     if y_norm < 1e-30 {
         vector_operation::zero(&pool, result_vec)?;
-        return Ok(0);
+        return Ok(ConjugateGradientLog {
+            elapsed_secs: start_time.elapsed().as_secs_f64(),
+            step_num: 0,
+        });
     }
 
     let residual_tol = param.residual_tol;
@@ -123,7 +133,10 @@ pub fn conjugate_gradient(
         );
     }
 
-    Ok(step_num)
+    Ok(ConjugateGradientLog {
+        elapsed_secs: start_time.elapsed().as_secs_f64(),
+        step_num,
+    })
 }
 
 #[cfg(test)]
@@ -151,9 +164,9 @@ mod tests {
             max_step: 100,
         };
 
-        let steps = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
+        let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
 
-        assert!(steps > 0);
+        assert!(log.step_num > 0);
         for i in 0..3 {
             assert!(
                 (result_vec[i] - y[i]).abs() < TOL,
@@ -184,9 +197,9 @@ mod tests {
             max_step: 100,
         };
 
-        let steps = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
+        let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
 
-        assert!(steps > 0);
+        assert!(log.step_num > 0);
         let expected = vec![1.0, 2.0, 3.0];
         for i in 0..3 {
             assert!(
@@ -220,9 +233,9 @@ mod tests {
             max_step: 100,
         };
 
-        let steps = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
+        let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
 
-        assert!(steps > 0);
+        assert!(log.step_num > 0);
 
         // Verify A * x = y
         let pool = build_pool(1).unwrap();
@@ -259,9 +272,9 @@ mod tests {
             max_step: 100,
         };
 
-        let steps = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
+        let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
 
-        assert_eq!(steps, 0);
+        assert_eq!(log.step_num, 0);
         assert!((result_vec[0]).abs() < TOL);
         assert!((result_vec[1]).abs() < TOL);
     }

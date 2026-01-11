@@ -18,19 +18,26 @@ pub struct LanczosParameters {
     pub calc_eigenvec: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct LanczosLog {
+    pub elapsed_secs: f64,
+    pub step_num: usize,
+}
+
 /// Lanczos method (smallest eigenvalue / optionally eigenvector).
 ///
 /// - `out_vec`: if `param.calc_eigenvec == true`, it will be overwritten with the eigenvector.
 /// - `out_val`: will be overwritten with the converged smallest eigenvalue.
 /// - `Lanczos_Initial_Guess` is intentionally not supported here (always random start).
-/// - `Output_Step_Number` is intentionally not supported here.
+/// - Returns `LanczosLog` containing elapsed time and step count.
 pub fn lanczos(
     m: &CsrMatrix,
     out_vec: &mut Vec<f64>,
     out_val: &mut f64,
     param: &LanczosParameters,
     num_threads: usize,
-) -> Result<()> {
+) -> Result<LanczosLog> {
+    let start_time = std::time::Instant::now();
     // ----- input checks -----
     if m.row_dim != m.col_dim || m.row_dim == 0 || m.col_dim == 0 {
         bail!("Lanczos: input matrix must be square and non-empty");
@@ -45,7 +52,10 @@ pub fn lanczos(
         *out_val = m.vals[0];
         out_vec.clear();
         out_vec.push(1.0);
-        return Ok(());
+        return Ok(LanczosLog {
+            elapsed_secs: start_time.elapsed().as_secs_f64(),
+            step_num: 0,
+        });
     }
 
     let acc = param.acc;
@@ -70,7 +80,10 @@ pub fn lanczos(
             out_vec.clear();
             out_vec.extend_from_slice(&a_work[0..n]);
         }
-        return Ok(());
+        return Ok(LanczosLog {
+            elapsed_secs: start_time.elapsed().as_secs_f64(),
+            step_num: 0,
+        });
     }
 
     // ----- build pool once -----
@@ -231,7 +244,10 @@ pub fn lanczos(
         vector_operation::normalize(&pool, out_vec, norm)?;
     }
 
-    Ok(())
+    Ok(LanczosLog {
+        elapsed_secs: start_time.elapsed().as_secs_f64(),
+        step_num,
+    })
 }
 
 #[cfg(test)]

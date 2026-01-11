@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 
-use crate::blas::conjugate_gradient::{conjugate_gradient, ConjugateGradientParameters};
+use crate::blas::conjugate_gradient::{
+    conjugate_gradient, ConjugateGradientLog, ConjugateGradientParameters,
+};
 use crate::blas::matrix_vector_operation;
 use crate::blas::vector_operation;
 use crate::blas::CsrMatrix;
@@ -19,6 +21,14 @@ pub struct InverseIterationParameters {
     pub cg_params: ConjugateGradientParameters,
 }
 
+#[derive(Debug, Clone)]
+pub struct InverseIterationLog {
+    pub elapsed_secs: f64,
+    pub initial_residual_error: f64,
+    pub residual_errors: Vec<f64>,
+    pub cg_logs: Vec<ConjugateGradientLog>,
+}
+
 /// Inverse iteration method to refine an eigenvector.
 ///
 /// Given an approximate eigenpair (eigen_val, eigen_vec), this method
@@ -31,14 +41,15 @@ pub struct InverseIterationParameters {
 /// - `param`: Solver parameters
 /// - `num_threads`: Number of threads for parallel computation
 ///
-/// Returns the number of iterations performed.
+/// Returns `InverseIterationLog` containing elapsed time, initial residual, and per-step logs.
 pub fn inverse_iteration(
     m: &CsrMatrix,
     eigen_vec: &mut [f64],
     eigen_val: f64,
     param: &InverseIterationParameters,
     num_threads: usize,
-) -> Result<usize> {
+) -> Result<InverseIterationLog> {
+    let start_time = std::time::Instant::now();
     // Check input matrix
     if m.row_dim != m.col_dim || m.row_dim == 0 {
         bail!(
@@ -70,29 +81,25 @@ pub fn inverse_iteration(
 
     let mut improved_eigen_vec = eigen_vec.to_vec();
 
-    let mut step_num = 0;
+    let mut residual_errors = Vec::new();
+    let mut cg_logs = Vec::new();
+
+    // Compute initial residual error before any optimization
+    let initial_residual_error =
+        matrix_vector_operation::eigenpair_residual_norm1(&pool, m, eigen_vec, eigen_val)?;
+
+    if initial_residual_error < eigenvec_tol {
+        return Ok(InverseIterationLog {
+            elapsed_secs: start_time.elapsed().as_secs_f64(),
+            initial_residual_error,
+            residual_errors,
+            cg_logs,
+        });
+    }
 
     for step in 0..max_step {
-        // Compute residual error: ||M * eigen_vec - eigen_val * eigen_vec||_1 (L1 norm)
-        let residual_error =
-            matrix_vector_operation::eigenpair_residual_norm1(&pool, m, eigen_vec, eigen_val)?;
-
-        if residual_error < eigenvec_tol {
-            step_num = step;
-            break;
-        }
-
-        if step == max_step - 1 {
-            eprintln!(
-                "Warning: Inverse iteration not converged after {} iterations, error={}",
-                max_step, residual_error
-            );
-            step_num = step;
-            break;
-        }
-
         // Solve (M + shift*I) * improved_eigen_vec = eigen_vec
-        conjugate_gradient(
+        let cg_log = conjugate_gradient(
             m,
             eigen_vec,
             &mut improved_eigen_vec,
@@ -101,15 +108,38 @@ pub fn inverse_iteration(
             num_threads,
         )?;
 
+        cg_logs.push(cg_log);
+
         // Normalize
         let norm = vector_operation::norm2(&pool, &improved_eigen_vec)?;
         vector_operation::normalize(&pool, &mut improved_eigen_vec, norm)?;
 
         // Copy improved_eigen_vec to eigen_vec
         vector_operation::copy(&pool, &improved_eigen_vec, eigen_vec)?;
+
+        // Compute residual error after this step
+        let residual_error =
+            matrix_vector_operation::eigenpair_residual_norm1(&pool, m, eigen_vec, eigen_val)?;
+        residual_errors.push(residual_error);
+
+        if residual_error < eigenvec_tol {
+            break;
+        }
+
+        if step == max_step - 1 {
+            eprintln!(
+                "Warning: Inverse iteration not converged after {} iterations, error={}",
+                max_step, residual_error
+            );
+        }
     }
 
-    Ok(step_num)
+    Ok(InverseIterationLog {
+        elapsed_secs: start_time.elapsed().as_secs_f64(),
+        initial_residual_error,
+        residual_errors,
+        cg_logs,
+    })
 }
 
 #[cfg(test)]
@@ -136,7 +166,7 @@ mod tests {
         let eigen_val = 1.0;
 
         let param = InverseIterationParameters {
-            diag_add: 0.1,
+            diag_add: 1e-07,
             eigenvec_tol: 1e-8,
             max_step: 100,
             cg_params: ConjugateGradientParameters {
@@ -145,9 +175,9 @@ mod tests {
             },
         };
 
-        let steps = inverse_iteration(&m, &mut eigen_vec, eigen_val, &param, 1).unwrap();
+        let log = inverse_iteration(&m, &mut eigen_vec, eigen_val, &param, 1).unwrap();
 
-        assert!(steps < 100);
+        assert!(log.cg_logs.len() < 100);
 
         // Check eigenvector is close to [1, 0, 0] or [-1, 0, 0]
         assert!(eigen_vec[0].abs() > 1.0 - TOL);
@@ -175,7 +205,7 @@ mod tests {
         let eigen_val = 1.0;
 
         let param = InverseIterationParameters {
-            diag_add: 0.1,
+            diag_add: 1e-07,
             eigenvec_tol: 1e-8,
             max_step: 100,
             cg_params: ConjugateGradientParameters {
@@ -184,9 +214,9 @@ mod tests {
             },
         };
 
-        let steps = inverse_iteration(&m, &mut eigen_vec, eigen_val, &param, 1).unwrap();
+        let log = inverse_iteration(&m, &mut eigen_vec, eigen_val, &param, 1).unwrap();
 
-        assert!(steps < 100);
+        assert!(log.cg_logs.len() < 100);
 
         // Check M * v = lambda * v
         let pool = build_pool(1).unwrap();
@@ -216,7 +246,7 @@ mod tests {
 
         let mut eigen_vec = vec![1.0, 0.0];
         let param = InverseIterationParameters {
-            diag_add: 0.1,
+            diag_add: 1e-07,
             eigenvec_tol: 1e-8,
             max_step: 100,
             cg_params: ConjugateGradientParameters {
@@ -241,7 +271,7 @@ mod tests {
 
         let mut eigen_vec = vec![1.0, 0.0, 0.0]; // wrong size
         let param = InverseIterationParameters {
-            diag_add: 0.1,
+            diag_add: 1e-07,
             eigenvec_tol: 1e-8,
             max_step: 100,
             cg_params: ConjugateGradientParameters {
