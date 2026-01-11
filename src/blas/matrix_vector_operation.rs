@@ -40,26 +40,31 @@ pub fn csr_matvec(
     let x_ptr = x.as_ptr() as usize;
 
     pool.install(|| {
-        y.par_iter_mut().enumerate().for_each(|(i, yi)| {
-            unsafe {
-                let rows = rows_ptr as *const usize;
-                let cols = cols_ptr as *const usize;
-                let vals = vals_ptr as *const f64;
-                let x = x_ptr as *const f64;
+        // Use into_par_iter() with zip for dynamic scheduling
+        // This allows Rayon to distribute work more dynamically
+        (0..m.row_dim)
+            .into_par_iter()
+            .zip(y.par_iter_mut())
+            .for_each(|(i, yi)| {
+                unsafe {
+                    let rows = rows_ptr as *const usize;
+                    let cols = cols_ptr as *const usize;
+                    let vals = vals_ptr as *const f64;
+                    let x = x_ptr as *const f64;
 
-                let row_start = *rows.add(i);
-                let row_end = *rows.add(i + 1);
+                    let row_start = *rows.add(i);
+                    let row_end = *rows.add(i + 1);
 
-                let mut sum = 0.0;
-                for p in row_start..row_end {
-                    let col = *cols.add(p);
-                    sum += *vals.add(p) * *x.add(col);
+                    let mut sum = 0.0;
+                    for p in row_start..row_end {
+                        let col = *cols.add(p);
+                        sum += *vals.add(p) * *x.add(col);
+                    }
+
+                    // shift * I part (square matrix ensured above)
+                    *yi = sum + shift * *x.add(i);
                 }
-
-                // shift * I part (square matrix ensured above)
-                *yi = sum + shift * *x.add(i);
-            }
-        });
+            });
     });
 
     Ok(())

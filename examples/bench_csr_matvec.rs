@@ -77,7 +77,7 @@ fn main() {
     let n = 1000000;
     let density = 0.0001;
     let num_iterations = 10;
-    let thread_counts = [1, 2, 3, 4, 5, 6];
+    let thread_counts = [1, 2, 3, 4, 5, 6, 7, 8];
 
     println!("=== CSR Matrix-Vector Multiplication Benchmark ===");
     println!("n={}, density={}\n", n, density);
