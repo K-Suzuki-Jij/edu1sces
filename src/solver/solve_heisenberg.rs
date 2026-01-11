@@ -23,19 +23,19 @@ pub fn solve_heisenberg(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blas::{ConjugateGradientParameters, InverseIterationParameters};
+    use crate::blas::{csr_mul, ConjugateGradientParameters, InverseIterationParameters};
     use std::collections::HashMap;
 
     const TOL: f64 = 1e-8;
 
     fn make_solver_params() -> SolverParameters {
         SolverParameters {
-            eigenvalue_tol: 1e-10,
+            eigenvalue_tol: 1e-14,
             min_step: 5,
             max_step: 1000,
             num_threads: 1,
             inverse_iteration_params: InverseIterationParameters {
-                diag_add: 10.0,
+                diag_add: 1e-7,
                 eigenvec_tol: 1e-8,
                 max_step: 100,
                 cg_params: ConjugateGradientParameters {
@@ -75,7 +75,7 @@ mod tests {
         let params = make_solver_params();
         let result = solve_heisenberg(&model, 0.0, &params).unwrap(); // Sz=0 sector
 
-        assert_eq!(result.dim, 2); // |↑↓⟩, |↓↑⟩
+        assert_eq!(result.dim(), 2); // |↑↓⟩, |↓↑⟩
         assert!(
             (result.energy - (-0.75)).abs() < TOL,
             "Expected energy -0.75, got {}",
@@ -102,6 +102,32 @@ mod tests {
             c0,
             c1
         );
+
+        // Test expectation values: <Sz_i> = 0 in singlet state
+        let sz_op = model.make_local_op_sz(0).unwrap();
+        for site in 0..2 {
+            let sz = result.expectation_onsite(&sz_op, site);
+            assert!(sz.abs() < TOL, "Expected <Sz_{}> = 0, got {}", site, sz);
+        }
+
+        // Test <Sx_i> = 0 (Sx takes states outside Sz=0 sector)
+        let sx_op = model.make_local_op_sx(0).unwrap();
+        for site in 0..2 {
+            let sx = result.expectation_onsite(&sx_op, site);
+            assert!(sx.abs() < TOL, "Expected <Sx_{}> = 0, got {}", site, sx);
+        }
+
+        // Test <Sz_i^2> = 1/4 for S=1/2
+        let szsz_op = csr_mul(1.0, &sz_op, 1.0, &sz_op).unwrap();
+        for site in 0..2 {
+            let szsz = result.expectation_onsite(&szsz_op, site);
+            assert!(
+                (szsz - 0.25).abs() < TOL,
+                "Expected <Sz_{}^2> = 0.25, got {}",
+                site,
+                szsz
+            );
+        }
     }
 
     #[test]
@@ -128,11 +154,39 @@ mod tests {
         let params = make_solver_params();
         let result = solve_heisenberg(&model, 0.0, &params).unwrap(); // Sz=0 sector
 
-        assert_eq!(result.dim, 3); // |+1,-1⟩, |0,0⟩, |-1,+1⟩
+        assert_eq!(result.dim(), 3); // |+1,-1⟩, |0,0⟩, |-1,+1⟩
         assert!(
             (result.energy - (-2.0)).abs() < TOL,
             "Expected energy -2.0, got {}",
             result.energy
         );
+
+        // Test expectation values: <Sz_i> = 0 in Sz=0 sector
+        let sz_op = model.make_local_op_sz(0).unwrap();
+        for site in 0..2 {
+            let sz = result.expectation_onsite(&sz_op, site);
+            assert!(sz.abs() < TOL, "Expected <Sz_{}> = 0, got {}", site, sz);
+        }
+
+        // Test <Sx_i> = 0 (Sx takes states outside Sz=0 sector)
+        let sx_op = model.make_local_op_sx(0).unwrap();
+        for site in 0..2 {
+            let sx = result.expectation_onsite(&sx_op, site);
+            assert!(sx.abs() < TOL, "Expected <Sx_{}> = 0, got {}", site, sx);
+        }
+
+        // Test <Sz_i^2> for S=1 singlet state
+        // In the singlet (S_total=0) state: |singlet⟩ = (|+1,-1⟩ - |0,0⟩ + |-1,+1⟩)/√3
+        // <Sz_i^2> = (1/3)(1 + 0 + 1) = 2/3
+        let szsz_op = csr_mul(1.0, &sz_op, 1.0, &sz_op).unwrap();
+        for site in 0..2 {
+            let szsz = result.expectation_onsite(&szsz_op, site);
+            assert!(
+                (szsz - 2.0 / 3.0).abs() < TOL,
+                "Expected <Sz_{}^2> = 2/3, got {}",
+                site,
+                szsz
+            );
+        }
     }
 }

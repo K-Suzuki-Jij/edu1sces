@@ -1,4 +1,4 @@
-use crate::basis::HubbardBasis;
+use crate::basis::{HilbertBasis, HubbardBasis};
 use crate::blas::CsrMatrix;
 use crate::hamiltonian::{
     make_hamiltonian, make_intersite_elements, make_onsite_elements, HamiltonianElementGenerator,

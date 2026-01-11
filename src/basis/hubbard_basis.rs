@@ -190,12 +190,6 @@ impl HubbardBasis {
         })
     }
 
-    /// Return the local basis index (digit) at `site` from packed `basis`.
-    /// 0 -> |vac>, 1 -> |up>, 2 -> |dn>, 3 -> |updn>
-    pub fn find_local_basis(&self, basis: i128, site: usize) -> usize {
-        let base = self.site_base[site];
-        ((basis / base).rem_euclid(4)) as usize
-    }
 }
 
 impl HilbertBasis for HubbardBasis {
@@ -217,6 +211,11 @@ impl HilbertBasis for HubbardBasis {
     #[inline]
     fn site_base(&self) -> &[i128] {
         &self.site_base
+    }
+
+    #[inline]
+    fn local_dim(&self, _site: usize) -> usize {
+        4 // |vac>, |up>, |dn>, |updn>
     }
 }
 

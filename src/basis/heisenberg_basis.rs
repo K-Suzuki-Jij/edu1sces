@@ -165,14 +165,6 @@ impl HeisenbergBasis {
         })
     }
 
-    /// Return the local basis index (digit) at `site` from packed `basis`.
-    /// Convention matches the encoder in `dfs`:
-    /// digit = (two_s - sz2)/2, i.e. digit 0 corresponds to m=+S.
-    pub fn find_local_basis(&self, basis: i128, site: usize) -> usize {
-        let base = self.site_base[site];
-        let local_dim = (self.model.two_s_list[site] as i128) + 1;
-        ((basis / base).rem_euclid(local_dim)) as usize
-    }
 }
 
 impl HilbertBasis for HeisenbergBasis {
@@ -194,6 +186,11 @@ impl HilbertBasis for HeisenbergBasis {
     #[inline]
     fn site_base(&self) -> &[i128] {
         &self.site_base
+    }
+
+    #[inline]
+    fn local_dim(&self, site: usize) -> usize {
+        (self.model.two_s_list[site] as usize) + 1
     }
 }
 

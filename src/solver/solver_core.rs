@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::basis::HilbertBasis;
 use crate::blas::{inverse_iteration, lanczos, CsrMatrix, LanczosParameters};
-use crate::solver::{SolverParameters, SolverResult};
+use crate::solver::{BasisInfo, SolverParameters, SolverResult};
 
 /// Generic solver that takes closures to build basis and Hamiltonian.
 pub fn solve_with_basis_and_hamiltonian<B, MakeBasis, MakeHam>(
@@ -51,18 +51,30 @@ where
     )?;
 
     // Extract basis data
+    let num_sites = basis_obj.num_sites();
     let mut basis = Vec::with_capacity(dim);
     for i in 0..dim {
         basis.push(basis_obj.basis_state_at(i));
     }
     let inverse_basis = basis_obj.inverse_basis().clone();
+    let site_base = basis_obj.site_base().to_vec();
+    let local_dims: Vec<usize> = (0..num_sites)
+        .map(|site| basis_obj.local_dim(site))
+        .collect();
 
-    Ok(SolverResult {
+    let basis_info = BasisInfo {
         dim,
-        energy,
-        eigenvector,
         basis,
         inverse_basis,
+        num_sites,
+        site_base,
+        local_dims,
+    };
+
+    Ok(SolverResult {
+        energy,
+        eigenvector,
+        basis_info,
         lanczos_log,
         inverse_iteration_log,
     })

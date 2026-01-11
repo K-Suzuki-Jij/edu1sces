@@ -5,4 +5,4 @@ mod solver_types;
 
 pub use solve_heisenberg::solve_heisenberg;
 pub use solve_hubbard::solve_hubbard;
-pub use solver_types::{SolverParameters, SolverResult};
+pub use solver_types::{BasisInfo, SolverParameters, SolverResult};

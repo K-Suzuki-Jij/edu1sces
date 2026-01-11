@@ -73,7 +73,7 @@ mod tests {
         let params = make_solver_params();
         let result = solve_hubbard(&model, 1, 0.5, &params).unwrap();
 
-        assert_eq!(result.dim, 2);
+        assert_eq!(result.dim(), 2);
         assert!(
             (result.energy - (-1.0)).abs() < TOL,
             "Expected energy -1.0, got {}",
@@ -127,7 +127,7 @@ mod tests {
         let params = make_solver_params();
         let result = solve_hubbard(&model, 2, 0.0, &params).unwrap();
 
-        assert_eq!(result.dim, 4);
+        assert_eq!(result.dim(), 4);
         assert!(
             (result.energy - (-2.0)).abs() < TOL,
             "Expected energy -2.0, got {}",
@@ -162,7 +162,7 @@ mod tests {
         let params = make_solver_params();
         let result = solve_hubbard(&model, 2, 0.0, &params).unwrap();
 
-        assert_eq!(result.dim, 4);
+        assert_eq!(result.dim(), 4);
 
         // Expected energy: E = U/2 - sqrt((U/2)^2 + 4t^2)
         let u: f64 = 100.0;
@@ -205,7 +205,7 @@ mod tests {
         let params = make_solver_params();
         let result = solve_hubbard(&model, 4, 0.0, &params).unwrap();
 
-        assert_eq!(result.dim, 36);
+        assert_eq!(result.dim(), 36);
 
         // Energy should be negative (attractive correlations)
         assert!(
