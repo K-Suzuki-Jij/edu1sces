@@ -10,6 +10,7 @@ use crate::utility::rayon_pool::build_pool;
 
 /// Parameters for the inverse iteration solver.
 #[derive(Debug, Clone)]
+#[pyo3::pyclass(get_all)]
 pub struct InverseIterationParameters {
     /// Diagonal shift to ensure positive definiteness
     pub diag_add: f64,
@@ -21,7 +22,26 @@ pub struct InverseIterationParameters {
     pub cg_params: ConjugateGradientParameters,
 }
 
+#[pyo3::pymethods]
+impl InverseIterationParameters {
+    #[new]
+    fn new(
+        diag_add: f64,
+        eigenvec_tol: f64,
+        max_step: usize,
+        cg_params: ConjugateGradientParameters,
+    ) -> Self {
+        Self {
+            diag_add,
+            eigenvec_tol,
+            max_step,
+            cg_params,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
+#[pyo3::pyclass(get_all)]
 pub struct InverseIterationLog {
     pub elapsed_secs: f64,
     pub initial_residual_error: f64,

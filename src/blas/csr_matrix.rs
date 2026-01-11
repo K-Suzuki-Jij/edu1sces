@@ -6,6 +6,7 @@ use rand::{Rng, SeedableRng};
 pub const MATRIX_ZERO_EPS: f64 = 1e-13;
 
 #[derive(Debug, Clone, PartialEq)]
+#[pyo3::pyclass(get_all)]
 pub struct CsrMatrix {
     pub row_dim: usize,
     pub col_dim: usize,
@@ -265,6 +266,17 @@ pub fn csr_mul(c_m1: f64, m1: &CsrMatrix, c_m2: f64, m2: &CsrMatrix) -> Result<C
     }
 
     Ok(out)
+}
+
+/// Scale a CSR matrix by a scalar: out = c * m
+pub fn csr_scale(c: f64, m: &CsrMatrix) -> CsrMatrix {
+    CsrMatrix {
+        row_dim: m.row_dim,
+        col_dim: m.col_dim,
+        rows: m.rows.clone(),
+        cols: m.cols.clone(),
+        vals: m.vals.iter().map(|v| c * v).collect(),
+    }
 }
 
 pub fn csr_transpose(c: f64, m: &CsrMatrix) -> Result<CsrMatrix> {
@@ -607,5 +619,66 @@ mod tests {
         assert_eq!(t.rows, vec![0, 1, 2]);
         assert_eq!(t.cols, vec![0, 0]);
         assert_eq!(t.vals, vec![3.0, -4.0]);
+    }
+}
+
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+
+#[pymethods]
+impl CsrMatrix {
+    /// Create a new CSR matrix from raw CSR components.
+    #[new]
+    fn py_new(
+        row_dim: usize,
+        col_dim: usize,
+        rows: Vec<usize>,
+        cols: Vec<usize>,
+        vals: Vec<f64>,
+    ) -> PyResult<Self> {
+        let m = CsrMatrix {
+            row_dim,
+            col_dim,
+            rows,
+            cols,
+            vals,
+        };
+        m.check()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(m)
+    }
+
+    /// Create a CSR matrix from dense 2D representation (list of lists).
+    /// Zero entries (exactly 0.0) are not stored.
+    #[staticmethod]
+    #[pyo3(name = "from_dense")]
+    fn py_from_dense(dense: Vec<Vec<f64>>) -> Self {
+        CsrMatrix::from_dense(&dense)
+    }
+
+    /// Matrix multiplication: self * other
+    fn __mul__(&self, other: &CsrMatrix) -> PyResult<CsrMatrix> {
+        csr_mul(1.0, self, 1.0, other).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Matrix addition: self + other
+    fn __add__(&self, other: &CsrMatrix) -> PyResult<CsrMatrix> {
+        csr_add(1.0, self, 1.0, other).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Matrix subtraction: self - other
+    fn __sub__(&self, other: &CsrMatrix) -> PyResult<CsrMatrix> {
+        csr_add(1.0, self, -1.0, other).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Scalar multiplication: scalar * self (right multiplication)
+    fn __rmul__(&self, scalar: f64) -> CsrMatrix {
+        csr_scale(scalar, self)
+    }
+
+    /// Scalar multiplication: self * scalar (left multiplication)
+    #[allow(non_snake_case)]
+    fn __mul__scalar(&self, scalar: f64) -> CsrMatrix {
+        csr_scale(scalar, self)
     }
 }

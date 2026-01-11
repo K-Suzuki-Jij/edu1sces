@@ -189,7 +189,6 @@ impl HubbardBasis {
             site_base,
         })
     }
-
 }
 
 impl HilbertBasis for HubbardBasis {

@@ -18,5 +18,18 @@ fn core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<model::hubbard::HubbardModel>()?;
     m.add_class::<model::kondo_lattice::KondoLatticeModel>()?;
     m.add_class::<model::kondo_lattice_2ch::KondoLattice2ChModel>()?;
+    m.add_class::<blas::CsrMatrix>()?;
+    m.add_class::<solver::SolverResult>()?;
+    m.add_class::<solver::SolverParameters>()?;
+    m.add_class::<blas::InverseIterationParameters>()?;
+    m.add_class::<blas::ConjugateGradientParameters>()?;
+    m.add_function(wrap_pyfunction!(
+        crate::solver::solve_heisenberg::solve_heisenberg,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::solver::solve_hubbard::solve_hubbard,
+        m
+    )?)?;
     Ok(())
 }

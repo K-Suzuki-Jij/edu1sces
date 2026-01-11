@@ -1,4 +1,5 @@
 use anyhow::Result;
+use pyo3::prelude::*;
 
 use crate::basis::HeisenbergBasis;
 use crate::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
@@ -7,6 +8,7 @@ use crate::solver::solver_core::solve_with_basis_and_hamiltonian;
 use crate::solver::{SolverParameters, SolverResult};
 
 /// Solve the Heisenberg model to find the ground state energy and eigenvector.
+#[pyfunction]
 pub fn solve_heisenberg(
     model: &HeisenbergModel,
     target_total_sz: f64,

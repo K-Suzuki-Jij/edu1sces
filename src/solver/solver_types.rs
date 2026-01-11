@@ -1,4 +1,5 @@
 use ahash::AHashMap;
+use pyo3::prelude::*;
 
 use crate::basis::find_local_basis;
 use crate::blas::{CsrMatrix, InverseIterationLog, InverseIterationParameters, LanczosLog};
@@ -20,19 +21,25 @@ pub struct BasisInfo {
 }
 
 /// Result of solving a model.
+#[pyclass]
 pub struct SolverResult {
     /// Ground state energy
+    #[pyo3(get)]
     pub energy: f64,
     /// Ground state eigenvector
+    #[pyo3(get)]
     pub eigenvector: Vec<f64>,
     /// Basis information for expectation value calculations
     pub basis_info: BasisInfo,
     /// Lanczos solver log
+    #[pyo3(get)]
     pub lanczos_log: LanczosLog,
     /// Inverse iteration solver log
+    #[pyo3(get)]
     pub inverse_iteration_log: InverseIterationLog,
 }
 
+#[pymethods]
 impl SolverResult {
     /// Hilbert space dimension (convenience accessor)
     pub fn dim(&self) -> usize {
@@ -85,6 +92,7 @@ impl SolverResult {
 
 /// Parameters for the solver.
 #[derive(Debug, Clone)]
+#[pyclass(get_all)]
 pub struct SolverParameters {
     /// Convergence threshold for eigenvalue (Lanczos)
     pub eigenvalue_tol: f64,
@@ -96,4 +104,24 @@ pub struct SolverParameters {
     pub num_threads: usize,
     /// Parameters for inverse iteration (eigenvector refinement)
     pub inverse_iteration_params: InverseIterationParameters,
+}
+
+#[pymethods]
+impl SolverParameters {
+    #[new]
+    fn new(
+        eigenvalue_tol: f64,
+        min_step: usize,
+        max_step: usize,
+        num_threads: usize,
+        inverse_iteration_params: InverseIterationParameters,
+    ) -> Self {
+        Self {
+            eigenvalue_tol,
+            min_step,
+            max_step,
+            num_threads,
+            inverse_iteration_params,
+        }
+    }
 }

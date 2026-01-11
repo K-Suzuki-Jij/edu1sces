@@ -19,6 +19,7 @@ pub struct LanczosParameters {
 }
 
 #[derive(Debug, Clone)]
+#[pyo3::pyclass(get_all)]
 pub struct LanczosLog {
     pub elapsed_secs: f64,
     pub step_num: usize,

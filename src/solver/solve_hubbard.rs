@@ -1,4 +1,5 @@
 use anyhow::Result;
+use pyo3::prelude::*;
 
 use crate::basis::HubbardBasis;
 use crate::hamiltonian::hubbard_hamiltonian::make_hubbard_hamiltonian;
@@ -7,6 +8,7 @@ use crate::solver::solver_core::solve_with_basis_and_hamiltonian;
 use crate::solver::{SolverParameters, SolverResult};
 
 /// Solve the Hubbard model to find the ground state energy and eigenvector.
+#[pyfunction]
 pub fn solve_hubbard(
     model: &HubbardModel,
     num_electrons: usize,
@@ -178,12 +180,7 @@ mod tests {
         let sz_op = model.make_local_op_sz().unwrap();
         for site in 0..2 {
             let sz = result.expectation_onsite(&sz_op, site);
-            assert!(
-                sz.abs() < TOL,
-                "Expected <sz_{}> = 0, got {}",
-                site,
-                sz
-            );
+            assert!(sz.abs() < TOL, "Expected <sz_{}> = 0, got {}", site, sz);
         }
     }
 
@@ -292,12 +289,7 @@ mod tests {
         let sz_op = model.make_local_op_sz().unwrap();
         for site in 0..4 {
             let sz = result.expectation_onsite(&sz_op, site);
-            assert!(
-                sz.abs() < TOL,
-                "Expected <sz_{}> = 0, got {}",
-                site,
-                sz
-            );
+            assert!(sz.abs() < TOL, "Expected <sz_{}> = 0, got {}", site, sz);
         }
     }
 }

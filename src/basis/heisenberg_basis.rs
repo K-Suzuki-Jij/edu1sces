@@ -164,7 +164,6 @@ impl HeisenbergBasis {
             total_sz2,
         })
     }
-
 }
 
 impl HilbertBasis for HeisenbergBasis {

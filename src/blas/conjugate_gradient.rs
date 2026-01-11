@@ -7,6 +7,7 @@ use crate::utility::rayon_pool::build_pool;
 
 /// Parameters for the conjugate gradient solver.
 #[derive(Debug, Clone)]
+#[pyo3::pyclass(get_all)]
 pub struct ConjugateGradientParameters {
     /// Convergence threshold (residual squared)
     pub residual_tol: f64,
@@ -14,7 +15,19 @@ pub struct ConjugateGradientParameters {
     pub max_step: usize,
 }
 
+#[pyo3::pymethods]
+impl ConjugateGradientParameters {
+    #[new]
+    fn new(residual_tol: f64, max_step: usize) -> Self {
+        Self {
+            residual_tol,
+            max_step,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
+#[pyo3::pyclass(get_all)]
 pub struct ConjugateGradientLog {
     pub elapsed_secs: f64,
     pub step_num: usize,
