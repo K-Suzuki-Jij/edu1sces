@@ -31,12 +31,12 @@ mod tests {
 
     fn make_solver_params() -> SolverParameters {
         SolverParameters {
-            eigenvalue_tol: 1e-10,
+            eigenvalue_tol: 1e-14,
             min_step: 5,
             max_step: 1000,
             num_threads: 1,
             inverse_iteration_params: InverseIterationParameters {
-                diag_add: 10.0,
+                diag_add: 1e-7,
                 eigenvec_tol: 1e-8,
                 max_step: 100,
                 cg_params: ConjugateGradientParameters {
@@ -100,6 +100,32 @@ mod tests {
             c0,
             c1
         );
+
+        // Test expectation values
+        // 1 electron with Sz=0.5 (spin up), evenly distributed over 2 sites
+        // <n_i> = 0.5 (probability 0.5 on each site)
+        let n_op = model.make_local_op_n().unwrap();
+        for site in 0..2 {
+            let n = result.expectation_onsite(&n_op, site);
+            assert!(
+                (n - 0.5).abs() < TOL,
+                "Expected <n_{}> = 0.5, got {}",
+                site,
+                n
+            );
+        }
+
+        // <sz_i> = 0.25 (spin-up electron with probability 0.5 at each site)
+        let sz_op = model.make_local_op_sz().unwrap();
+        for site in 0..2 {
+            let sz = result.expectation_onsite(&sz_op, site);
+            assert!(
+                (sz - 0.25).abs() < TOL,
+                "Expected <sz_{}> = 0.25, got {}",
+                site,
+                sz
+            );
+        }
     }
 
     #[test]
@@ -133,6 +159,32 @@ mod tests {
             "Expected energy -2.0, got {}",
             result.energy
         );
+
+        // Test expectation values
+        // 2 electrons in Sz=0 sector, evenly distributed
+        // <n_i> = 1.0 (average 1 electron per site)
+        let n_op = model.make_local_op_n().unwrap();
+        for site in 0..2 {
+            let n = result.expectation_onsite(&n_op, site);
+            assert!(
+                (n - 1.0).abs() < TOL,
+                "Expected <n_{}> = 1.0, got {}",
+                site,
+                n
+            );
+        }
+
+        // <sz_i> = 0 in Sz=0 sector
+        let sz_op = model.make_local_op_sz().unwrap();
+        for site in 0..2 {
+            let sz = result.expectation_onsite(&sz_op, site);
+            assert!(
+                sz.abs() < TOL,
+                "Expected <sz_{}> = 0, got {}",
+                site,
+                sz
+            );
+        }
     }
 
     #[test]
@@ -221,5 +273,31 @@ mod tests {
             "Expected normalized eigenvector, got norm^2 = {}",
             norm_sq
         );
+
+        // Test expectation values
+        // Half-filling (4 electrons on 4 sites), Sz=0 sector
+        // <n_i> = 1.0 (1 electron per site on average)
+        let n_op = model.make_local_op_n().unwrap();
+        for site in 0..4 {
+            let n = result.expectation_onsite(&n_op, site);
+            assert!(
+                (n - 1.0).abs() < TOL,
+                "Expected <n_{}> = 1.0, got {}",
+                site,
+                n
+            );
+        }
+
+        // <sz_i> = 0 in Sz=0 sector (by symmetry)
+        let sz_op = model.make_local_op_sz().unwrap();
+        for site in 0..4 {
+            let sz = result.expectation_onsite(&sz_op, site);
+            assert!(
+                sz.abs() < TOL,
+                "Expected <sz_{}> = 0, got {}",
+                site,
+                sz
+            );
+        }
     }
 }
