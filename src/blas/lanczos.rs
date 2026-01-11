@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 
 use crate::blas::lapack_dstev;
 use crate::blas::lapack_dsyev;
@@ -102,10 +103,12 @@ pub fn lanczos(
     // Save seed for restart (eigenvector computation needs same initial vector)
     let seed: u64 = rand::rng().random();
     let mut rng = StdRng::seed_from_u64(seed);
+    let mut norm = 0.0;
     for i in 0..n {
         v0[i] = rng.random_range(-1.0..=1.0);
+        norm += v0[i] * v0[i];
     }
-    vector_operation::normalize(&pool, &mut v0)?;
+    vector_operation::normalize(&pool, &mut v0, norm.sqrt())?;
 
     // v1 = M * v0
     matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v0, 0.0)?;
@@ -115,7 +118,7 @@ pub fn lanczos(
     temp_eig_val[0] = diag[0];
 
     // v1 -= diag[0] * v0
-    vector_operation::axpy(&pool, &mut v1, -diag[0], &v0)?;
+    vector_operation::axpy_inplace(&pool, &mut v1, -diag[0], &v0)?;
 
     // ----- main Lanczos loop -----
     let mut step_num: usize = 0;
@@ -124,11 +127,9 @@ pub fn lanczos(
         // v2 = v1
         vector_operation::copy(&pool, &v1, &mut v2)?;
 
-        // off[step-1] = ||v2||
+        // off[step-1] = ||v2||, v2 = v2 / ||v2||
         off[step - 1] = vector_operation::norm2(&pool, &v2)?;
-
-        // v2 = v2 / ||v2||
-        vector_operation::normalize(&pool, &mut v2)?;
+        vector_operation::normalize(&pool, &mut v2, off[step - 1])?;
 
         // v1 = M * v2
         matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v2, 0.0)?;
@@ -162,8 +163,7 @@ pub fn lanczos(
         }
 
         // v1 -= diag[step] * v2 + off[step-1] * v0
-        vector_operation::axpy(&pool, &mut v1, -diag[step], &v2)?;
-        vector_operation::axpy(&pool, &mut v1, -off[step - 1], &v0)?;
+        vector_operation::axpbz_inplace(&pool, &mut v1, -diag[step], &v2, -off[step - 1], &v0)?;
 
         // v0 = v2
         vector_operation::copy(&pool, &v2, &mut v0)?;
@@ -181,44 +181,54 @@ pub fn lanczos(
 
         // Reinitialize v0 with same seed, out_vec = 0
         let mut rng = StdRng::seed_from_u64(seed);
+        let mut norm = 0.0;
         for i in 0..n {
             v0[i] = rng.random_range(-1.0..=1.0);
+            norm += v0[i] * v0[i];
             out_vec[i] = 0.0;
         }
-        vector_operation::normalize(&pool, &mut v0)?;
+        vector_operation::normalize(&pool, &mut v0, norm.sqrt())?;
 
         // out_vec += temp_eig_vec[0] * v0
         if temp_eig_vec.len() < step_num + 1 {
             bail!("Lanczos: internal error (temp_eig_vec too short)");
         }
-        vector_operation::axpy(&pool, out_vec, temp_eig_vec[0], &v0)?;
+        vector_operation::axpy_inplace(&pool, out_vec, temp_eig_vec[0], &v0)?;
 
         // v1 = M * v0
         matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v0, 0.0)?;
 
         // v1 -= diag[0] * v0
-        vector_operation::axpy(&pool, &mut v1, -diag[0], &v0)?;
+        vector_operation::axpy_inplace(&pool, &mut v1, -diag[0], &v0)?;
 
         for step in 1..=step_num {
-            // v2 = v1
-            vector_operation::copy(&pool, &v1, &mut v2)?;
-            vector_operation::normalize(&pool, &mut v2)?;
+            // v2 = v1 / ||v1|| (copy + normalize in one pass)
+            let norm_sq: f64 = pool.install(|| {
+                v2.par_iter_mut()
+                    .zip(v1.par_iter())
+                    .map(|(dst, src)| {
+                        *dst = *src;
+                        (*src) * (*src)
+                    })
+                    .sum()
+            });
+            vector_operation::normalize(&pool, &mut v2, norm_sq.sqrt())?;
 
             // out_vec += temp_eig_vec[step] * v2
-            vector_operation::axpy(&pool, out_vec, temp_eig_vec[step], &v2)?;
+            vector_operation::axpy_inplace(&pool, out_vec, temp_eig_vec[step], &v2)?;
 
             // v1 = M * v2
             matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v2, 0.0)?;
 
             // v1 -= diag[step] * v2 + off[step-1] * v0
-            vector_operation::axpy(&pool, &mut v1, -diag[step], &v2)?;
-            vector_operation::axpy(&pool, &mut v1, -off[step - 1], &v0)?;
+            vector_operation::axpbz_inplace(&pool, &mut v1, -diag[step], &v2, -off[step - 1], &v0)?;
 
             // v0 = v2
             vector_operation::copy(&pool, &v2, &mut v0)?;
         }
 
-        vector_operation::normalize(&pool, out_vec)?;
+        let norm = vector_operation::norm2(&pool, out_vec)?;
+        vector_operation::normalize(&pool, out_vec, norm)?;
     }
 
     Ok(())

@@ -73,11 +73,11 @@ fn benchmark_lanczos(
 }
 
 fn main() {
-    let n = 24;
+    let n = 22;
     let two_s = 1; // S = 3/2
     let total_sz = 0.0;
     let num_iterations = 10;
-    let thread_counts = [1, 2, 3, 4, 5, 6];
+    let thread_counts = [1, 2, 3, 4, 5, 6, 7, 8];
 
     let model = build_chain_model(two_s, n, 1.0, 1.0, 0.3, 0.2);
 

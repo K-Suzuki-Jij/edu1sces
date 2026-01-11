@@ -25,7 +25,7 @@ pub fn copy(pool: &ThreadPool, src: &[f64], dst: &mut [f64]) -> Result<()> {
 }
 
 /// y += a * x
-pub fn axpy(pool: &ThreadPool, y: &mut [f64], a: f64, x: &[f64]) -> Result<()> {
+pub fn axpy_inplace(pool: &ThreadPool, y: &mut [f64], a: f64, x: &[f64]) -> Result<()> {
     if y.len() != x.len() {
         bail!("dimension mismatch: y.len() != x.len()");
     }
@@ -34,6 +34,30 @@ pub fn axpy(pool: &ThreadPool, y: &mut [f64], a: f64, x: &[f64]) -> Result<()> {
         y.par_iter_mut().zip(x.par_iter()).for_each(|(yy, xx)| {
             *yy += a * (*xx);
         });
+    });
+    Ok(())
+}
+
+/// y += a*x + b*z (in-place update of y with two scaled vectors)
+pub fn axpbz_inplace(
+    pool: &ThreadPool,
+    y: &mut [f64],
+    a: f64,
+    x: &[f64],
+    b: f64,
+    z: &[f64],
+) -> Result<()> {
+    if y.len() != x.len() || y.len() != z.len() {
+        bail!("dimension mismatch: y/x/z must have the same length");
+    }
+
+    pool.install(|| {
+        y.par_iter_mut()
+            .zip(x.par_iter())
+            .zip(z.par_iter())
+            .for_each(|((yy, xx), zz)| {
+                *yy += a * (*xx) + b * (*zz);
+            });
     });
     Ok(())
 }
@@ -95,18 +119,18 @@ pub fn norm2(pool: &ThreadPool, x: &[f64]) -> Result<f64> {
     Ok(s.sqrt())
 }
 
-pub fn normalize(pool: &ThreadPool, x: &mut [f64]) -> Result<()> {
-    let n = norm2(pool, x)?;
-    if n == 0.0 {
+pub fn normalize(pool: &ThreadPool, x: &mut [f64], norm: f64) -> Result<()> {
+    if norm == 0.0 {
         bail!("cannot normalize zero vector");
     }
 
+    let inv = 1.0 / norm;
     pool.install(|| {
-        let inv = 1.0 / n;
         x.par_iter_mut().for_each(|v| {
             *v *= inv;
         });
     });
+
     Ok(())
 }
 
@@ -183,7 +207,7 @@ mod tests {
         let mut y = vec![1.0, 2.0, 3.0, 4.0];
         let x = vec![2.0, 3.0, 4.0, 5.0];
         let a = 2.0;
-        axpy(&pool, &mut y, a, &x).unwrap();
+        axpy_inplace(&pool, &mut y, a, &x).unwrap();
         // y = [1, 2, 3, 4] + 2 * [2, 3, 4, 5] = [5, 8, 11, 14]
         assert_vec_approx_eq(&y, &vec![5.0, 8.0, 11.0, 14.0]);
     }
@@ -193,7 +217,7 @@ mod tests {
         let pool = build_pool(2).unwrap();
         let mut y = vec![1.0, 2.0, 3.0];
         let x = vec![10.0, 20.0, 30.0];
-        axpy(&pool, &mut y, 0.0, &x).unwrap();
+        axpy_inplace(&pool, &mut y, 0.0, &x).unwrap();
         assert_vec_approx_eq(&y, &vec![1.0, 2.0, 3.0]);
     }
 
@@ -202,7 +226,7 @@ mod tests {
         let pool = build_pool(2).unwrap();
         let mut y = vec![1.0, 2.0];
         let x = vec![1.0, 2.0, 3.0];
-        let result = axpy(&pool, &mut y, 1.0, &x);
+        let result = axpy_inplace(&pool, &mut y, 1.0, &x);
         assert!(result.is_err());
     }
 
@@ -296,7 +320,8 @@ mod tests {
     fn test_normalize() {
         let pool = build_pool(2).unwrap();
         let mut x = vec![3.0, 4.0];
-        normalize(&pool, &mut x).unwrap();
+        let n = norm2(&pool, &x).unwrap();
+        normalize(&pool, &mut x, n).unwrap();
         // normalized = [3/5, 4/5] = [0.6, 0.8]
         assert_vec_approx_eq(&x, &vec![0.6, 0.8]);
         // verify norm is 1
@@ -308,7 +333,8 @@ mod tests {
     fn test_normalize_already_unit() {
         let pool = build_pool(2).unwrap();
         let mut x = vec![1.0, 0.0, 0.0];
-        normalize(&pool, &mut x).unwrap();
+        let n = norm2(&pool, &x).unwrap();
+        normalize(&pool, &mut x, n).unwrap();
         assert_vec_approx_eq(&x, &vec![1.0, 0.0, 0.0]);
     }
 
@@ -316,7 +342,7 @@ mod tests {
     fn test_normalize_zero_vector() {
         let pool = build_pool(2).unwrap();
         let mut x = vec![0.0, 0.0, 0.0];
-        let result = normalize(&pool, &mut x);
+        let result = normalize(&pool, &mut x, 0.0);
         assert!(result.is_err());
     }
 

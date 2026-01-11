@@ -70,9 +70,7 @@ pub fn conjugate_gradient(
 
     // Normalize initial guess
     let x_norm = vector_operation::norm2(&pool, result_vec)?;
-    if x_norm > 1e-30 {
-        vector_operation::normalize(&pool, result_vec)?;
-    }
+    vector_operation::normalize(&pool, result_vec, x_norm)?;
 
     // r = y - (A + shift*I) * result_vec
     // First compute r = (A + shift*I) * result_vec, then r = y + (-1)*r = y - r
@@ -100,8 +98,8 @@ pub fn conjugate_gradient(
 
         // result_vec += alpha * p
         // r -= alpha * ap
-        vector_operation::axpy(&pool, result_vec, alpha, &p)?;
-        vector_operation::axpy(&pool, &mut r, -alpha, &ap)?;
+        vector_operation::axpy_inplace(&pool, result_vec, alpha, &p)?;
+        vector_operation::axpy_inplace(&pool, &mut r, -alpha, &ap)?;
 
         // residual_error = <r, r>
         let residual_error = vector_operation::dot(&pool, &r, &r)?;

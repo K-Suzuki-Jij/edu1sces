@@ -102,7 +102,8 @@ pub fn inverse_iteration(
         )?;
 
         // Normalize
-        vector_operation::normalize(&pool, &mut improved_eigen_vec)?;
+        let norm = vector_operation::norm2(&pool, &improved_eigen_vec)?;
+        vector_operation::normalize(&pool, &mut improved_eigen_vec, norm)?;
 
         // Copy improved_eigen_vec to eigen_vec
         vector_operation::copy(&pool, &improved_eigen_vec, eigen_vec)?;
@@ -169,7 +170,8 @@ mod tests {
 
         // Start with approximate eigenvector (normalized)
         let mut eigen_vec = vec![0.8, -0.6];
-        vector_operation::normalize(&build_pool(1).unwrap(), &mut eigen_vec).unwrap();
+        let norm = vector_operation::norm2(&build_pool(1).unwrap(), &eigen_vec).unwrap();
+        vector_operation::normalize(&build_pool(1).unwrap(), &mut eigen_vec, norm).unwrap();
         let eigen_val = 1.0;
 
         let param = InverseIterationParameters {
