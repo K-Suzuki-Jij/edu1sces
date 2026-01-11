@@ -1,5 +1,6 @@
 pub mod basis;
 pub mod blas;
+pub mod examples_util;
 pub mod hamiltonian;
 pub mod model;
 pub mod solver;

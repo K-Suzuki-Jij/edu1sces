@@ -1,28 +1,9 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
 use edu1sces::basis::{HeisenbergBasis, HilbertBasis};
+use edu1sces::examples_util::build_heisenberg_chain;
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use edu1sces::model::HeisenbergModel;
-
-fn build_chain_model(two_s: i32, n: usize, jxy: f64, jz: f64, hz: f64, d: f64) -> HeisenbergModel {
-    let mut exchange_xy = HashMap::new();
-    let mut exchange_z = HashMap::new();
-
-    for i in 0..n - 1 {
-        exchange_xy.insert((i, i + 1), jxy);
-        exchange_z.insert((i, i + 1), jz);
-    }
-
-    HeisenbergModel {
-        num_sites: n,
-        two_s_list: vec![two_s; n],
-        hz_list: vec![hz; n],
-        d_list: vec![d; n],
-        exchange_xy,
-        exchange_z,
-    }
-}
 
 fn benchmark(
     basis: &HeisenbergBasis,
@@ -56,7 +37,7 @@ fn main() {
     let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
-    let model = build_chain_model(two_s, n, 1.0, 1.0, 0.3, 0.2);
+    let model = build_heisenberg_chain(two_s, n, 1.0, 1.0, 0.3, 0.2);
 
     println!("=== make_heisenberg_hamiltonian Benchmark ===");
     println!("n={}, two_s={}, total_sz={}\n", n, two_s, total_sz);

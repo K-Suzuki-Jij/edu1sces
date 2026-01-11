@@ -1,71 +1,10 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
 use edu1sces::basis::{HeisenbergBasis, HilbertBasis, HubbardBasis};
 use edu1sces::blas::{lanczos, CsrMatrix, LanczosParameters};
+use edu1sces::examples_util::{build_heisenberg_chain, build_hubbard_chain};
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use edu1sces::hamiltonian::hubbard_hamiltonian::make_hubbard_hamiltonian;
-use edu1sces::model::{HeisenbergModel, HubbardModel};
-
-fn build_heisenberg_chain(
-    two_s: i32,
-    n: usize,
-    jxy: f64,
-    jz: f64,
-    hz: f64,
-    d: f64,
-) -> HeisenbergModel {
-    let mut exchange_xy = HashMap::new();
-    let mut exchange_z = HashMap::new();
-
-    for i in 0..n - 1 {
-        exchange_xy.insert((i, i + 1), jxy);
-        exchange_z.insert((i, i + 1), jz);
-    }
-
-    HeisenbergModel {
-        num_sites: n,
-        two_s_list: vec![two_s; n],
-        hz_list: vec![hz; n],
-        d_list: vec![d; n],
-        exchange_xy,
-        exchange_z,
-    }
-}
-
-fn build_hubbard_chain(
-    n: usize,
-    t: f64,
-    u: f64,
-    mu: f64,
-    hz: f64,
-    v: f64,
-    jxy: f64,
-    jz: f64,
-) -> HubbardModel {
-    let mut hopping = HashMap::new();
-    let mut density_density = HashMap::new();
-    let mut exchange_xy = HashMap::new();
-    let mut exchange_z = HashMap::new();
-
-    for i in 0..n - 1 {
-        hopping.insert((i, i + 1), t);
-        density_density.insert((i, i + 1), v);
-        exchange_xy.insert((i, i + 1), jxy);
-        exchange_z.insert((i, i + 1), jz);
-    }
-
-    HubbardModel {
-        num_sites: n,
-        hopping,
-        u_list: vec![u; n],
-        mu_list: vec![mu; n],
-        hz_list: vec![hz; n],
-        density_density,
-        exchange_xy,
-        exchange_z,
-    }
-}
 
 fn benchmark_lanczos(
     hamiltonian: &CsrMatrix,
