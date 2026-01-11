@@ -55,8 +55,8 @@ pub fn csr_matvec(
                     let row_start = *rows.add(i);
                     let row_end = *rows.add(i + 1);
 
-                    // Use multiple accumulators to reduce dependency chains
-                    // This allows better instruction-level parallelism
+                    // Use 4-way unrolling with independent accumulators
+                    // to reduce data dependency and improve ILP
                     let mut sum0 = 0.0;
                     let mut sum1 = 0.0;
                     let mut sum2 = 0.0;
@@ -74,14 +74,12 @@ pub fn csr_matvec(
                         p += 4;
                     }
 
-                    // Process remaining elements
                     let mut sum = sum0 + sum1 + sum2 + sum3;
                     while p < row_end {
                         sum += *vals.add(p) * *x.add(*cols.add(p));
                         p += 1;
                     }
 
-                    // shift * I part (square matrix ensured above)
                     *yi = sum + shift * *x.add(i);
                 }
             });
