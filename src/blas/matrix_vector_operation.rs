@@ -55,10 +55,30 @@ pub fn csr_matvec(
                     let row_start = *rows.add(i);
                     let row_end = *rows.add(i + 1);
 
-                    let mut sum = 0.0;
-                    for p in row_start..row_end {
-                        let col = *cols.add(p);
-                        sum += *vals.add(p) * *x.add(col);
+                    // Use multiple accumulators to reduce dependency chains
+                    // This allows better instruction-level parallelism
+                    let mut sum0 = 0.0;
+                    let mut sum1 = 0.0;
+                    let mut sum2 = 0.0;
+                    let mut sum3 = 0.0;
+
+                    let len = row_end - row_start;
+                    let unroll_end = row_start + (len / 4) * 4;
+
+                    let mut p = row_start;
+                    while p < unroll_end {
+                        sum0 += *vals.add(p) * *x.add(*cols.add(p));
+                        sum1 += *vals.add(p + 1) * *x.add(*cols.add(p + 1));
+                        sum2 += *vals.add(p + 2) * *x.add(*cols.add(p + 2));
+                        sum3 += *vals.add(p + 3) * *x.add(*cols.add(p + 3));
+                        p += 4;
+                    }
+
+                    // Process remaining elements
+                    let mut sum = sum0 + sum1 + sum2 + sum3;
+                    while p < row_end {
+                        sum += *vals.add(p) * *x.add(*cols.add(p));
+                        p += 1;
                     }
 
                     // shift * I part (square matrix ensured above)
