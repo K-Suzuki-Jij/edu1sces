@@ -192,6 +192,7 @@ mod tests {
             cg_params: ConjugateGradientParameters {
                 residual_tol: 1e-12,
                 max_step: 100,
+                output_log: false,
             },
         };
 
@@ -231,6 +232,7 @@ mod tests {
             cg_params: ConjugateGradientParameters {
                 residual_tol: 1e-12,
                 max_step: 100,
+                output_log: false,
             },
         };
 
@@ -272,6 +274,7 @@ mod tests {
             cg_params: ConjugateGradientParameters {
                 residual_tol: 1e-12,
                 max_step: 100,
+                output_log: false,
             },
         };
 
@@ -297,6 +300,7 @@ mod tests {
             cg_params: ConjugateGradientParameters {
                 residual_tol: 1e-12,
                 max_step: 100,
+                output_log: false,
             },
         };
 

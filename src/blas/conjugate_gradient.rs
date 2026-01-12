@@ -3,6 +3,7 @@ use anyhow::{bail, Result};
 use crate::blas::matrix_vector_operation;
 use crate::blas::vector_operation;
 use crate::blas::CsrMatrix;
+use crate::utility::py_log::py_print_overwrite;
 use crate::utility::rayon_pool::build_pool;
 
 /// Parameters for the conjugate gradient solver.
@@ -13,15 +14,18 @@ pub struct ConjugateGradientParameters {
     pub residual_tol: f64,
     /// Maximum iterations
     pub max_step: usize,
+    /// If true, print progress to stdout
+    pub output_log: bool,
 }
 
 #[pyo3::pymethods]
 impl ConjugateGradientParameters {
     #[new]
-    fn new(residual_tol: f64, max_step: usize) -> Self {
+    fn new(residual_tol: f64, max_step: usize, output_log: bool) -> Self {
         Self {
             residual_tol,
             max_step,
+            output_log,
         }
     }
 }
@@ -127,6 +131,10 @@ pub fn conjugate_gradient(
         // residual_error = <r, r>
         let residual_error = vector_operation::dot(&pool, &r, &r)?;
 
+        if param.output_log {
+            py_print_overwrite(&format!("CG_Step[{}]={:.1e}", step, residual_error));
+        }
+
         if residual_error < residual_tol {
             step_num = step;
             break;
@@ -175,6 +183,7 @@ mod tests {
         let param = ConjugateGradientParameters {
             residual_tol: 1e-12,
             max_step: 100,
+            output_log: false,
         };
 
         let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
@@ -208,6 +217,7 @@ mod tests {
         let param = ConjugateGradientParameters {
             residual_tol: 1e-12,
             max_step: 100,
+            output_log: false,
         };
 
         let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
@@ -244,6 +254,7 @@ mod tests {
         let param = ConjugateGradientParameters {
             residual_tol: 1e-12,
             max_step: 100,
+            output_log: false,
         };
 
         let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
@@ -283,6 +294,7 @@ mod tests {
         let param = ConjugateGradientParameters {
             residual_tol: 1e-12,
             max_step: 100,
+            output_log: false,
         };
 
         let log = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1).unwrap();
@@ -307,6 +319,7 @@ mod tests {
         let param = ConjugateGradientParameters {
             residual_tol: 1e-12,
             max_step: 100,
+            output_log: false,
         };
 
         let result = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1);
@@ -328,6 +341,7 @@ mod tests {
         let param = ConjugateGradientParameters {
             residual_tol: 1e-12,
             max_step: 100,
+            output_log: false,
         };
 
         let result = conjugate_gradient(&a, &y, &mut result_vec, 0.0, &param, 1);

@@ -104,6 +104,8 @@ pub struct SolverParameters {
     pub num_threads: usize,
     /// Parameters for inverse iteration (eigenvector refinement)
     pub inverse_iteration_params: InverseIterationParameters,
+    /// If true, print progress to stderr (overwrites same line with \r)
+    pub output_log: bool,
 }
 
 #[pymethods]
@@ -115,6 +117,7 @@ impl SolverParameters {
         max_step: usize,
         num_threads: usize,
         inverse_iteration_params: InverseIterationParameters,
+        output_log: bool,
     ) -> Self {
         Self {
             eigenvalue_tol,
@@ -122,6 +125,7 @@ impl SolverParameters {
             max_step,
             num_threads,
             inverse_iteration_params,
+            output_log,
         }
     }
 }

@@ -18,8 +18,10 @@ fn make_solver_params(num_threads: usize) -> SolverParameters {
             cg_params: ConjugateGradientParameters {
                 residual_tol: 1e-12,
                 max_step: 1000,
+                output_log: false,
             },
         },
+        output_log: false,
     }
 }
 

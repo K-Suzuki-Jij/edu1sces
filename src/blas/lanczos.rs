@@ -8,6 +8,7 @@ use crate::blas::lapack_dsyev;
 use crate::blas::matrix_vector_operation;
 use crate::blas::vector_operation;
 use crate::blas::CsrMatrix;
+use crate::utility::py_log::py_print_overwrite;
 use crate::utility::rayon_pool::build_pool;
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,8 @@ pub struct LanczosParameters {
     pub min_step: usize,
     pub max_step: usize,
     pub calc_eigenvec: bool,
+    /// If true, print progress to stderr (overwrites same line with \r)
+    pub output_log: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +172,10 @@ pub fn lanczos(
 
             let diff = (temp_eig_val[step] - temp_eig_val[step - 1]).abs();
 
+            if param.output_log {
+                py_print_overwrite(&format!("Lanczos_Step[{}]={:.1e}", step, diff));
+            }
+
             if diff < acc {
                 step_num = step;
                 *out_val = temp_eig_val[step];
@@ -216,6 +223,10 @@ pub fn lanczos(
         vector_operation::axpy_inplace(&pool, &mut v1, -diag[0], &v0)?;
 
         for step in 1..=step_num {
+            if param.output_log {
+                py_print_overwrite(&format!("Lanczos_Vec_Step:{}/{}", step, step_num));
+            }
+
             // v2 = v1 / ||v1|| (copy + normalize in one pass)
             let norm_sq: f64 = pool.install(|| {
                 v2.par_iter_mut()
@@ -245,8 +256,10 @@ pub fn lanczos(
         vector_operation::normalize(&pool, out_vec, norm)?;
     }
 
+    let elapsed_secs = start_time.elapsed().as_secs_f64();
+
     Ok(LanczosLog {
-        elapsed_secs: start_time.elapsed().as_secs_f64(),
+        elapsed_secs,
         step_num,
     })
 }
@@ -263,6 +276,7 @@ mod tests {
             min_step: 5,
             max_step: 100,
             calc_eigenvec: true,
+            output_log: false,
         }
     }
 
@@ -376,6 +390,7 @@ mod tests {
             min_step: 5,
             max_step: 100,
             calc_eigenvec: false,
+            output_log: false,
         };
 
         lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
@@ -420,6 +435,7 @@ mod tests {
             min_step: 10,
             max_step: 5, // invalid: max <= min
             calc_eigenvec: true,
+            output_log: false,
         };
 
         let result = lanczos(&m, &mut out_vec, &mut out_val, &param, 1);
@@ -498,6 +514,7 @@ mod tests {
             min_step: 5,
             max_step: 100,
             calc_eigenvec: true,
+            output_log: false,
         };
 
         lanczos(&m, &mut out_vec, &mut out_val, &param, 2).unwrap();
@@ -518,6 +535,7 @@ mod tests {
             min_step: 5,
             max_step: 200,
             calc_eigenvec: true,
+            output_log: false,
         };
 
         lanczos(&m, &mut out_vec, &mut out_val, &param, 2).unwrap();

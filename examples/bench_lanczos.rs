@@ -16,6 +16,7 @@ fn benchmark_lanczos(
         min_step: 5,
         max_step: 1000,
         calc_eigenvec: true,
+        output_log: false,
     };
 
     // Warmup

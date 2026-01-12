@@ -1,6 +1,9 @@
+from dataclasses import dataclass
+
 import edu1sces.core
 
 
+@dataclass
 class ConjugateGradientParameters:
     """Parameters for the conjugate gradient solver.
 
@@ -9,25 +12,17 @@ class ConjugateGradientParameters:
         max_step: Maximum number of CG iterations.
     """
 
-    def __init__(
-        self,
-        residual_tol: float = 1e-12,
-        max_step: int = 1000,
-    ) -> None:
-        if residual_tol <= 0:
+    residual_tol: float = 1e-12
+    max_step: int = 1000
+
+    def __post_init__(self) -> None:
+        if self.residual_tol <= 0:
             raise ValueError("residual_tol must be positive")
-        if max_step <= 0:
+        if self.max_step <= 0:
             raise ValueError("max_step must be positive")
 
-        self.residual_tol = residual_tol
-        self.max_step = max_step
 
-        self.core_params = edu1sces.core.ConjugateGradientParameters(
-            residual_tol,
-            max_step,
-        )
-
-
+@dataclass
 class InverseIterationParameters:
     """Parameters for the inverse iteration solver.
 
@@ -38,36 +33,24 @@ class InverseIterationParameters:
         cg_params: Parameters for the inner CG solver.
     """
 
-    def __init__(
-        self,
-        diag_add: float = 1e-7,
-        eigenvec_tol: float = 1e-8,
-        max_step: int = 100,
-        cg_params: ConjugateGradientParameters | None = None,
-    ) -> None:
-        if diag_add <= 0:
+    diag_add: float = 1e-7
+    eigenvec_tol: float = 1e-8
+    max_step: int = 100
+    cg_params: ConjugateGradientParameters | None = None
+
+    def __post_init__(self) -> None:
+        if self.diag_add <= 0:
             raise ValueError("diag_add must be positive")
-        if eigenvec_tol <= 0:
+        if self.eigenvec_tol <= 0:
             raise ValueError("eigenvec_tol must be positive")
-        if max_step <= 0:
+        if self.max_step <= 0:
             raise ValueError("max_step must be positive")
 
-        if cg_params is None:
-            cg_params = ConjugateGradientParameters()
-
-        self.diag_add = diag_add
-        self.eigenvec_tol = eigenvec_tol
-        self.max_step = max_step
-        self.cg_params = cg_params
-
-        self.core_params = edu1sces.core.InverseIterationParameters(
-            diag_add,
-            eigenvec_tol,
-            max_step,
-            cg_params.core_params,
-        )
+        if self.cg_params is None:
+            self.cg_params = ConjugateGradientParameters()
 
 
+@dataclass
 class SolverParameters:
     """Parameters for the eigenvalue solver.
 
@@ -77,40 +60,50 @@ class SolverParameters:
         max_step: Maximum Lanczos iterations.
         num_threads: Number of threads for parallel computation.
         inverse_iteration_params: Parameters for eigenvector refinement.
+        output_log: If True, print progress to stdout with real-time updates.
     """
 
-    def __init__(
-        self,
-        eigenvalue_tol: float = 1e-14,
-        min_step: int = 5,
-        max_step: int = 1000,
-        num_threads: int = 1,
-        inverse_iteration_params: InverseIterationParameters | None = None,
-    ) -> None:
-        if eigenvalue_tol <= 0:
+    eigenvalue_tol: float = 1e-14
+    min_step: int = 5
+    max_step: int = 1000
+    num_threads: int = 1
+    inverse_iteration_params: InverseIterationParameters | None = None
+    output_log: bool = False
+
+    def __post_init__(self) -> None:
+        if self.eigenvalue_tol <= 0:
             raise ValueError("eigenvalue_tol must be positive")
-        if min_step <= 0:
+        if self.min_step <= 0:
             raise ValueError("min_step must be positive")
-        if max_step <= 0:
+        if self.max_step <= 0:
             raise ValueError("max_step must be positive")
-        if max_step < min_step:
+        if self.max_step < self.min_step:
             raise ValueError("max_step must be >= min_step")
-        if num_threads <= 0:
+        if self.num_threads <= 0:
             raise ValueError("num_threads must be positive")
 
-        if inverse_iteration_params is None:
-            inverse_iteration_params = InverseIterationParameters()
+        if self.inverse_iteration_params is None:
+            self.inverse_iteration_params = InverseIterationParameters()
 
-        self.eigenvalue_tol = eigenvalue_tol
-        self.min_step = min_step
-        self.max_step = max_step
-        self.num_threads = num_threads
-        self.inverse_iteration_params = inverse_iteration_params
-
+        # Build core params with output_log propagated to CG
+        cg = self.inverse_iteration_params.cg_params
+        cg_core = edu1sces.core.ConjugateGradientParameters(
+            cg.residual_tol,
+            cg.max_step,
+            self.output_log,
+        )
+        inv = self.inverse_iteration_params
+        inv_core = edu1sces.core.InverseIterationParameters(
+            inv.diag_add,
+            inv.eigenvec_tol,
+            inv.max_step,
+            cg_core,
+        )
         self.core_params = edu1sces.core.SolverParameters(
-            eigenvalue_tol,
-            min_step,
-            max_step,
-            num_threads,
-            inverse_iteration_params.core_params,
+            self.eigenvalue_tol,
+            self.min_step,
+            self.max_step,
+            self.num_threads,
+            inv_core,
+            self.output_log,
         )
