@@ -49,93 +49,6 @@ impl HeisenbergModel {
         }
         Ok(())
     }
-
-    pub fn make_local_op_sz(&self, site: usize) -> Result<CsrMatrix> {
-        let two_sz = self.two_s_list[site];
-        let dim = (two_sz as usize) + 1;
-
-        let mut m = CsrMatrix::new();
-        m.row_dim = dim;
-        m.col_dim = dim;
-
-        m.rows = Vec::with_capacity(dim + 1);
-        m.rows.push(0);
-
-        for k in 0..dim {
-            let m2 = two_sz - 2 * (k as i32);
-            if m2 != 0 {
-                m.cols.push(k);
-                m.vals.push(0.5 * (m2 as f64));
-            }
-            m.rows.push(m.vals.len());
-        }
-
-        Ok(m)
-    }
-
-    pub fn make_local_op_sp(&self, site: usize) -> Result<CsrMatrix> {
-        let two_sz = self.two_s_list[site];
-        let dim = (two_sz as usize) + 1;
-
-        let s = 0.5 * (two_sz as f64);
-
-        let mut m = CsrMatrix::new();
-        m.row_dim = dim;
-        m.col_dim = dim;
-
-        m.rows = Vec::with_capacity(dim + 1);
-        m.rows.push(0);
-
-        for row in 0..dim {
-            if row + 1 >= dim {
-                m.rows.push(m.vals.len());
-                continue;
-            }
-
-            let col = row + 1;
-
-            let m2 = two_sz - 2 * (col as i32);
-            let mm = 0.5 * (m2 as f64);
-
-            let v2 = s * (s + 1.0) - mm * (mm + 1.0);
-            let v = if v2 <= 0.0 { 0.0 } else { v2.sqrt() };
-
-            if v != 0.0 {
-                m.cols.push(col);
-                m.vals.push(v);
-            }
-
-            m.rows.push(m.vals.len());
-        }
-
-        Ok(m)
-    }
-
-    pub fn make_local_op_sm(&self, site: usize) -> Result<CsrMatrix> {
-        csr_transpose(1.0, &self.make_local_op_sp(site)?)
-    }
-
-    pub fn make_local_op_sx(&self, site: usize) -> Result<CsrMatrix> {
-        let sp = self.make_local_op_sp(site)?;
-        let sm = self.make_local_op_sm(site)?;
-        csr_add(0.5, &sp, 0.5, &sm)
-    }
-
-    pub fn make_local_op_isy(&self, site: usize) -> Result<CsrMatrix> {
-        let sp = self.make_local_op_sp(site)?;
-        let sm = self.make_local_op_sm(site)?;
-        csr_add(0.5, &sp, -0.5, &sm)
-    }
-
-    /// H_i = hz_i * Sz_i + d_i * (Sz_i)^2
-    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
-        let sz = self.make_local_op_sz(site)?;
-        let hz = self.hz_list[site];
-        let d = self.d_list[site];
-
-        let szsz = csr_mul(1.0, &sz, 1.0, &sz)?;
-        csr_add(hz, &sz, d, &szsz)
-    }
 }
 
 #[pymethods]
@@ -254,6 +167,93 @@ impl HeisenbergModel {
         }
 
         Ok(dp[(two_m + offset) as usize])
+    }
+
+    pub fn make_local_op_sz(&self, site: usize) -> Result<CsrMatrix> {
+        let two_sz = self.two_s_list[site];
+        let dim = (two_sz as usize) + 1;
+
+        let mut m = CsrMatrix::new();
+        m.row_dim = dim;
+        m.col_dim = dim;
+
+        m.rows = Vec::with_capacity(dim + 1);
+        m.rows.push(0);
+
+        for k in 0..dim {
+            let m2 = two_sz - 2 * (k as i32);
+            if m2 != 0 {
+                m.cols.push(k);
+                m.vals.push(0.5 * (m2 as f64));
+            }
+            m.rows.push(m.vals.len());
+        }
+
+        Ok(m)
+    }
+
+    pub fn make_local_op_sp(&self, site: usize) -> Result<CsrMatrix> {
+        let two_sz = self.two_s_list[site];
+        let dim = (two_sz as usize) + 1;
+
+        let s = 0.5 * (two_sz as f64);
+
+        let mut m = CsrMatrix::new();
+        m.row_dim = dim;
+        m.col_dim = dim;
+
+        m.rows = Vec::with_capacity(dim + 1);
+        m.rows.push(0);
+
+        for row in 0..dim {
+            if row + 1 >= dim {
+                m.rows.push(m.vals.len());
+                continue;
+            }
+
+            let col = row + 1;
+
+            let m2 = two_sz - 2 * (col as i32);
+            let mm = 0.5 * (m2 as f64);
+
+            let v2 = s * (s + 1.0) - mm * (mm + 1.0);
+            let v = if v2 <= 0.0 { 0.0 } else { v2.sqrt() };
+
+            if v != 0.0 {
+                m.cols.push(col);
+                m.vals.push(v);
+            }
+
+            m.rows.push(m.vals.len());
+        }
+
+        Ok(m)
+    }
+
+    pub fn make_local_op_sm(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_sp(site)?)
+    }
+
+    pub fn make_local_op_sx(&self, site: usize) -> Result<CsrMatrix> {
+        let sp = self.make_local_op_sp(site)?;
+        let sm = self.make_local_op_sm(site)?;
+        csr_add(0.5, &sp, 0.5, &sm)
+    }
+
+    pub fn make_local_op_isy(&self, site: usize) -> Result<CsrMatrix> {
+        let sp = self.make_local_op_sp(site)?;
+        let sm = self.make_local_op_sm(site)?;
+        csr_add(0.5, &sp, -0.5, &sm)
+    }
+
+    /// H_i = hz_i * Sz_i + d_i * (Sz_i)^2
+    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
+        let sz = self.make_local_op_sz(site)?;
+        let hz = self.hz_list[site];
+        let d = self.d_list[site];
+
+        let szsz = csr_mul(1.0, &sz, 1.0, &sz)?;
+        csr_add(hz, &sz, d, &szsz)
     }
 }
 

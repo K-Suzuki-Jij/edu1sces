@@ -58,123 +58,6 @@ impl HubbardModel {
         }
         Ok(())
     }
-
-    // =========================================================================
-    // Local operators (4x4 matrices on local Fock space)
-    //
-    // Local basis:
-    //   0 -> |vac>     (n_up=0, n_down=0)
-    //   1 -> |up>      (n_up=1, n_down=0)
-    //   2 -> |down>    (n_up=0, n_down=1)
-    //   3 -> |updown>  (n_up=1, n_down=1)
-    //
-    // Fundamental operators: c_up, c_down (annihilation)
-    // All other operators are derived from these.
-    // =========================================================================
-
-    /// c_up (annihilation): |up> -> |vac>, |updown> -> |down>
-    /// With fermion sign: c_up |updown> = +|down> (up is first)
-    pub fn make_local_op_c_up(&self) -> CsrMatrix {
-        // row 0 (|vac>):  c_up |up> = |vac>      => col=1, val=1
-        // row 2 (|down>): c_up |updown> = |down> => col=3, val=1
-        CsrMatrix {
-            row_dim: 4,
-            col_dim: 4,
-            rows: vec![0, 1, 1, 2, 2],
-            cols: vec![1, 3],
-            vals: vec![1.0, 1.0],
-        }
-    }
-
-    /// c_down (annihilation): |down> -> |vac>, |updown> -> |up>
-    /// With fermion sign: c_down |updown> = -|up> (down is second, must pass up)
-    pub fn make_local_op_c_down(&self) -> CsrMatrix {
-        // row 0 (|vac>): c_down |down> = |vac>   => col=2, val=1
-        // row 1 (|up>):  c_down |updown> = -|up> => col=3, val=-1
-        CsrMatrix {
-            row_dim: 4,
-            col_dim: 4,
-            rows: vec![0, 1, 2, 2, 2],
-            cols: vec![2, 3],
-            vals: vec![1.0, -1.0],
-        }
-    }
-
-    /// c_up^dag (creation) = transpose(c_up)
-    pub fn make_local_op_c_up_dag(&self) -> Result<CsrMatrix> {
-        csr_transpose(1.0, &self.make_local_op_c_up())
-    }
-
-    /// c_down^dag (creation) = transpose(c_down)
-    pub fn make_local_op_c_down_dag(&self) -> Result<CsrMatrix> {
-        csr_transpose(1.0, &self.make_local_op_c_down())
-    }
-
-    /// n_up = c_up^dag c_up
-    pub fn make_local_op_n_up(&self) -> Result<CsrMatrix> {
-        let c_up = self.make_local_op_c_up();
-        let c_up_dag = self.make_local_op_c_up_dag()?;
-        csr_mul(1.0, &c_up_dag, 1.0, &c_up)
-    }
-
-    /// n_down = c_down^dag c_down
-    pub fn make_local_op_n_down(&self) -> Result<CsrMatrix> {
-        let c_down = self.make_local_op_c_down();
-        let c_down_dag = self.make_local_op_c_down_dag()?;
-        csr_mul(1.0, &c_down_dag, 1.0, &c_down)
-    }
-
-    /// n = n_up + n_down
-    pub fn make_local_op_n(&self) -> Result<CsrMatrix> {
-        let n_up = self.make_local_op_n_up()?;
-        let n_down = self.make_local_op_n_down()?;
-        csr_add(1.0, &n_up, 1.0, &n_down)
-    }
-
-    /// Sz = (n_up - n_down) / 2
-    pub fn make_local_op_sz(&self) -> Result<CsrMatrix> {
-        let n_up = self.make_local_op_n_up()?;
-        let n_down = self.make_local_op_n_down()?;
-        csr_add(0.5, &n_up, -0.5, &n_down)
-    }
-
-    /// S+ = c_up^dag c_down
-    pub fn make_local_op_sp(&self) -> Result<CsrMatrix> {
-        let c_up_dag = self.make_local_op_c_up_dag()?;
-        let c_down = self.make_local_op_c_down();
-        csr_mul(1.0, &c_up_dag, 1.0, &c_down)
-    }
-
-    /// S- = c_down^dag c_up = transpose(S+)
-    pub fn make_local_op_sm(&self) -> Result<CsrMatrix> {
-        csr_transpose(1.0, &self.make_local_op_sp()?)
-    }
-
-    /// Local onsite Hamiltonian:
-    /// H_i = U n_up n_down - mu (n_up + n_down) + hz Sz
-    ///     = U n_up n_down - mu (n_up + n_down) + hz (n_up - n_down) / 2
-    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
-        let u = self.u_list[site];
-        let mu = self.mu_list[site];
-        let hz = self.hz_list[site];
-
-        let n_up = self.make_local_op_n_up()?;
-        let n_down = self.make_local_op_n_down()?;
-
-        // n_up * n_down
-        let n_up_n_down = csr_mul(1.0, &n_up, 1.0, &n_down)?;
-
-        // U * n_up * n_down
-        // - mu * (n_up + n_down) = -mu * n_up - mu * n_down
-        // + hz * Sz = hz * (n_up - n_down) / 2 = (hz/2) * n_up - (hz/2) * n_down
-        // = U * n_up_n_down + (-mu + hz/2) * n_up + (-mu - hz/2) * n_down
-
-        let coeff_up = -mu + 0.5 * hz;
-        let coeff_down = -mu - 0.5 * hz;
-
-        let term1 = csr_add(u, &n_up_n_down, coeff_up, &n_up)?;
-        csr_add(1.0, &term1, coeff_down, &n_down)
-    }
 }
 
 #[pymethods]
@@ -312,6 +195,123 @@ impl HubbardModel {
 
         c_up.checked_mul(c_dn)
             .ok_or_else(|| anyhow::anyhow!("i128 overflow in dim = C(L,N_up)*C(L,N_dn)"))
+    }
+
+    // =========================================================================
+    // Local operators (4x4 matrices on local Fock space)
+    //
+    // Local basis:
+    //   0 -> |vac>     (n_up=0, n_down=0)
+    //   1 -> |up>      (n_up=1, n_down=0)
+    //   2 -> |down>    (n_up=0, n_down=1)
+    //   3 -> |updown>  (n_up=1, n_down=1)
+    //
+    // Fundamental operators: c_up, c_down (annihilation)
+    // All other operators are derived from these.
+    // =========================================================================
+
+    /// c_up (annihilation): |up> -> |vac>, |updown> -> |down>
+    /// With fermion sign: c_up |updown> = +|down> (up is first)
+    pub fn make_local_op_c_up(&self) -> CsrMatrix {
+        // row 0 (|vac>):  c_up |up> = |vac>      => col=1, val=1
+        // row 2 (|down>): c_up |updown> = |down> => col=3, val=1
+        CsrMatrix {
+            row_dim: 4,
+            col_dim: 4,
+            rows: vec![0, 1, 1, 2, 2],
+            cols: vec![1, 3],
+            vals: vec![1.0, 1.0],
+        }
+    }
+
+    /// c_down (annihilation): |down> -> |vac>, |updown> -> |up>
+    /// With fermion sign: c_down |updown> = -|up> (down is second, must pass up)
+    pub fn make_local_op_c_down(&self) -> CsrMatrix {
+        // row 0 (|vac>): c_down |down> = |vac>   => col=2, val=1
+        // row 1 (|up>):  c_down |updown> = -|up> => col=3, val=-1
+        CsrMatrix {
+            row_dim: 4,
+            col_dim: 4,
+            rows: vec![0, 1, 2, 2, 2],
+            cols: vec![2, 3],
+            vals: vec![1.0, -1.0],
+        }
+    }
+
+    /// c_up^dag (creation) = transpose(c_up)
+    pub fn make_local_op_c_up_dag(&self) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_up())
+    }
+
+    /// c_down^dag (creation) = transpose(c_down)
+    pub fn make_local_op_c_down_dag(&self) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_down())
+    }
+
+    /// n_up = c_up^dag c_up
+    pub fn make_local_op_n_up(&self) -> Result<CsrMatrix> {
+        let c_up = self.make_local_op_c_up();
+        let c_up_dag = self.make_local_op_c_up_dag()?;
+        csr_mul(1.0, &c_up_dag, 1.0, &c_up)
+    }
+
+    /// n_down = c_down^dag c_down
+    pub fn make_local_op_n_down(&self) -> Result<CsrMatrix> {
+        let c_down = self.make_local_op_c_down();
+        let c_down_dag = self.make_local_op_c_down_dag()?;
+        csr_mul(1.0, &c_down_dag, 1.0, &c_down)
+    }
+
+    /// n = n_up + n_down
+    pub fn make_local_op_n(&self) -> Result<CsrMatrix> {
+        let n_up = self.make_local_op_n_up()?;
+        let n_down = self.make_local_op_n_down()?;
+        csr_add(1.0, &n_up, 1.0, &n_down)
+    }
+
+    /// Sz = (n_up - n_down) / 2
+    pub fn make_local_op_sz(&self) -> Result<CsrMatrix> {
+        let n_up = self.make_local_op_n_up()?;
+        let n_down = self.make_local_op_n_down()?;
+        csr_add(0.5, &n_up, -0.5, &n_down)
+    }
+
+    /// S+ = c_up^dag c_down
+    pub fn make_local_op_sp(&self) -> Result<CsrMatrix> {
+        let c_up_dag = self.make_local_op_c_up_dag()?;
+        let c_down = self.make_local_op_c_down();
+        csr_mul(1.0, &c_up_dag, 1.0, &c_down)
+    }
+
+    /// S- = c_down^dag c_up = transpose(S+)
+    pub fn make_local_op_sm(&self) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_sp()?)
+    }
+
+    /// Local onsite Hamiltonian:
+    /// H_i = U n_up n_down - mu (n_up + n_down) + hz Sz
+    ///     = U n_up n_down - mu (n_up + n_down) + hz (n_up - n_down) / 2
+    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
+        let u = self.u_list[site];
+        let mu = self.mu_list[site];
+        let hz = self.hz_list[site];
+
+        let n_up = self.make_local_op_n_up()?;
+        let n_down = self.make_local_op_n_down()?;
+
+        // n_up * n_down
+        let n_up_n_down = csr_mul(1.0, &n_up, 1.0, &n_down)?;
+
+        // U * n_up * n_down
+        // - mu * (n_up + n_down) = -mu * n_up - mu * n_down
+        // + hz * Sz = hz * (n_up - n_down) / 2 = (hz/2) * n_up - (hz/2) * n_down
+        // = U * n_up_n_down + (-mu + hz/2) * n_up + (-mu - hz/2) * n_down
+
+        let coeff_up = -mu + 0.5 * hz;
+        let coeff_down = -mu - 0.5 * hz;
+
+        let term1 = csr_add(u, &n_up_n_down, coeff_up, &n_up)?;
+        csr_add(1.0, &term1, coeff_down, &n_down)
     }
 }
 

@@ -681,4 +681,63 @@ impl CsrMatrix {
     fn __mul__scalar(&self, scalar: f64) -> CsrMatrix {
         csr_scale(scalar, self)
     }
+
+    /// Print the matrix in dense format.
+    fn print(&self, py: Python<'_>) {
+        let builtins = py.import("builtins").unwrap();
+        let print_fn = builtins.getattr("print").unwrap();
+        let _ = print_fn.call1((self.to_dense_string().trim_end(),));
+    }
+
+    /// Return the matrix as a formatted dense string.
+    fn to_dense_string(&self) -> String {
+        // Build dense representation
+        let mut dense = vec![vec![0.0; self.col_dim]; self.row_dim];
+        for i in 0..self.row_dim {
+            for p in self.rows[i]..self.rows[i + 1] {
+                dense[i][self.cols[p]] = self.vals[p];
+            }
+        }
+
+        // Find max width needed for formatting
+        let mut max_width = 1;
+        for row in &dense {
+            for &val in row {
+                let s = format!("{:.6}", val);
+                let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                max_width = max_width.max(trimmed.len());
+            }
+        }
+
+        // Build output string
+        let mut out = format!("{}x{} matrix:\n", self.row_dim, self.col_dim);
+        for row in &dense {
+            out.push('[');
+            for (j, &val) in row.iter().enumerate() {
+                let s = format!("{:.6}", val);
+                let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                if j > 0 {
+                    out.push(' ');
+                }
+                out.push_str(&format!("{:>width$}", trimmed, width = max_width));
+            }
+            out.push_str("]\n");
+        }
+        out
+    }
+
+    /// Python __str__ representation.
+    fn __str__(&self) -> String {
+        self.to_dense_string()
+    }
+
+    /// Python __repr__ representation.
+    fn __repr__(&self) -> String {
+        format!(
+            "CsrMatrix({}x{}, nnz={})",
+            self.row_dim,
+            self.col_dim,
+            self.nnz()
+        )
+    }
 }
