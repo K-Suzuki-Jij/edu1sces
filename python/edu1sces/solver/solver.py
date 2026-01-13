@@ -1,6 +1,7 @@
 import edu1sces.core
 from edu1sces.model import HeisenbergModel, HubbardModel
 from .solver_parameters import SolverParameters
+from .solver_result import SolverResult
 
 
 def solve(
@@ -9,7 +10,7 @@ def solve(
     total_sz: float,
     num_electrons: int | None = None,
     params: SolverParameters | None = None,
-) -> edu1sces.core.SolverResult:
+) -> SolverResult:
     """Solve the model to find the ground state.
 
     Args:
@@ -25,19 +26,29 @@ def solve(
         params = SolverParameters()
 
     if isinstance(model, HeisenbergModel):
-        return edu1sces.core.solve_heisenberg(
+        core_result = edu1sces.core.solve_heisenberg(
             model.core_model,
             total_sz,
             params.core_params,
         )
+        return SolverResult(
+            core_result,
+            model.site_to_integer,
+            params.num_threads,
+        )
     elif isinstance(model, HubbardModel):
         if num_electrons is None:
             raise ValueError("num_electrons is required for HubbardModel")
-        return edu1sces.core.solve_hubbard(
+        core_result = edu1sces.core.solve_hubbard(
             model.core_model,
             num_electrons,
             total_sz,
             params.core_params,
+        )
+        return SolverResult(
+            core_result,
+            model.site_to_integer,
+            params.num_threads,
         )
     else:
         raise TypeError(f"Unsupported model type: {type(model)}")

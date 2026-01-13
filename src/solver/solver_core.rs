@@ -1,20 +1,24 @@
 use anyhow::Result;
+use std::collections::HashMap;
 
 use crate::basis::HilbertBasis;
 use crate::blas::{inverse_iteration, lanczos, CsrMatrix, LanczosParameters};
-use crate::solver::{BasisInfo, SolverParameters, SolverResult};
+use crate::solver::{BasisInfo, CachedBasis, LocalStateLabels, SolverParameters, SolverResult};
 use crate::utility::py_log::py_print_flush;
 
 /// Generic solver that takes closures to build basis and Hamiltonian.
-pub fn solve_with_basis_and_hamiltonian<B, MakeBasis, MakeHam>(
+pub fn solve_with_basis_and_hamiltonian<B, MakeBasis, MakeHam, MakeSectorBuilder>(
     make_basis: MakeBasis,
     make_hamiltonian: MakeHam,
+    make_sector_builder: MakeSectorBuilder,
+    current_quantum_numbers: Vec<i32>,
     params: &SolverParameters,
 ) -> Result<SolverResult>
 where
     B: HilbertBasis,
     MakeBasis: FnOnce() -> Result<B>,
     MakeHam: FnOnce(&B) -> Result<CsrMatrix>,
+    MakeSectorBuilder: FnOnce() -> Box<dyn LocalStateLabels>,
 {
     let output_log = params.output_log;
     let num_threads = params.num_threads;
@@ -111,13 +115,27 @@ where
         .map(|site| basis_obj.local_dim(site))
         .collect();
 
-    let basis_info = BasisInfo {
+    // Build the sector builder
+    let sector_builder = make_sector_builder();
+
+    // Create the initial cached basis
+    let current_cached_basis = CachedBasis {
         dim,
         basis,
         inverse_basis,
+    };
+
+    // Initialize basis_cache with the current sector
+    let mut basis_cache = HashMap::new();
+    basis_cache.insert(current_quantum_numbers.clone(), current_cached_basis);
+
+    let basis_info = BasisInfo {
         num_sites,
         site_base,
         local_dims,
+        current_quantum_numbers,
+        sector_builder,
+        basis_cache,
     };
 
     Ok(SolverResult {

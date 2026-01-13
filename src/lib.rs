@@ -23,6 +23,9 @@ fn core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<solver::SolverParameters>()?;
     m.add_class::<blas::InverseIterationParameters>()?;
     m.add_class::<blas::ConjugateGradientParameters>()?;
+    m.add_class::<blas::LanczosLog>()?;
+    m.add_class::<blas::InverseIterationLog>()?;
+    m.add_class::<blas::ConjugateGradientLog>()?;
     m.add_function(wrap_pyfunction!(
         crate::solver::solve_heisenberg::solve_heisenberg,
         m
