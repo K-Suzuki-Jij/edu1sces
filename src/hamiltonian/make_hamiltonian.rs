@@ -1,14 +1,14 @@
 use anyhow::{bail, Result};
 use rayon::prelude::*;
 
-use crate::basis::hilbert_basis::HilbertBasis;
+use crate::basis::Basis;
 use crate::blas::CsrMatrix;
 use crate::blas::MATRIX_ZERO_EPS;
 use crate::hamiltonian::transition_state_holder::TransitionStateHolder;
 use crate::utility::rayon_pool::with_pool;
 
 /// Generate all Hamiltonian nonzero elements for a given basis state (row).
-pub trait HamiltonianElementGenerator<Basis>: Sync {
+pub trait HamiltonianElementGenerator: Sync {
     /// Generate transition elements from `basis_state` and store them into `holder`.
     fn make_elements(
         &self,
@@ -18,28 +18,27 @@ pub trait HamiltonianElementGenerator<Basis>: Sync {
     ) -> Result<()>;
 }
 
-pub fn make_hamiltonian<Basis, Generator>(
+pub fn make_hamiltonian<Generator>(
     basis: &Basis,
     generator: &Generator,
     num_threads: usize,
 ) -> Result<CsrMatrix>
 where
-    Basis: HilbertBasis + Sync,
-    Generator: HamiltonianElementGenerator<Basis>,
+    Generator: HamiltonianElementGenerator,
 {
     let dim = basis.dim();
     if dim == 0 {
         bail!("Target Hilbert space has zero dimension.");
     }
 
-    let num_sites = basis.site_base().len();
+    let num_sites = basis.num_sites();
     if num_sites == 0 {
         bail!("The system size is zero.");
     }
 
     let make_holder = || TransitionStateHolder {
         vals: ahash::AHashMap::new(),
-        site_base: basis.site_base().to_vec(),
+        site_base: basis.site_base.clone(),
         local_basis: vec![0; num_sites],
         zero_eps: MATRIX_ZERO_EPS,
     };
@@ -106,7 +105,11 @@ where
                 let mut entries = Vec::with_capacity(row_cols.len());
 
                 for (&transition_basis, &v) in holder.vals.iter() {
-                    entries.push((basis.inverse_basis_at(transition_basis)?, v));
+                    let col = basis
+                        .inverse_basis
+                        .get(&transition_basis)
+                        .ok_or_else(|| anyhow::anyhow!("basis not found: {}", transition_basis))?;
+                    entries.push((*col, v));
                 }
 
                 entries.sort_unstable_by_key(|&(col, _)| col);

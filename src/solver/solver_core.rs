@@ -1,24 +1,22 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::basis::HilbertBasis;
+use crate::basis::Basis;
 use crate::blas::{inverse_iteration, lanczos, CsrMatrix, LanczosParameters};
-use crate::solver::{BasisInfo, CachedBasis, LocalStateLabels, SolverParameters, SolverResult};
+use crate::model::QuantumModel;
+use crate::solver::{BasisInfo, SolverParameters, SolverResult};
 use crate::utility::py_log::py_print_flush;
 
-/// Generic solver that takes closures to build basis and Hamiltonian.
-pub fn solve_with_basis_and_hamiltonian<B, MakeBasis, MakeHam, MakeSectorBuilder>(
-    make_basis: MakeBasis,
+/// Solve a quantum model to find the ground state.
+pub fn solve_model<M, MakeHam>(
+    model: M,
     make_hamiltonian: MakeHam,
-    make_sector_builder: MakeSectorBuilder,
     current_quantum_numbers: Vec<i32>,
     params: &SolverParameters,
 ) -> Result<SolverResult>
 where
-    B: HilbertBasis,
-    MakeBasis: FnOnce() -> Result<B>,
-    MakeHam: FnOnce(&B) -> Result<CsrMatrix>,
-    MakeSectorBuilder: FnOnce() -> Box<dyn LocalStateLabels>,
+    M: QuantumModel + 'static,
+    MakeHam: FnOnce(&Basis) -> Result<CsrMatrix>,
 {
     let output_log = params.output_log;
     let num_threads = params.num_threads;
@@ -28,8 +26,7 @@ where
         py_print_flush("Building basis...\n");
     }
     let basis_start = std::time::Instant::now();
-    let basis_obj = make_basis()?;
-    let dim = basis_obj.dim();
+    let basis = model.build_basis(&current_quantum_numbers)?;
     if output_log {
         py_print_flush(&format!(
             "Done in {:.1}s ({} threads)\n",
@@ -43,7 +40,7 @@ where
         py_print_flush("Building Hamiltonian...\n");
     }
     let ham_start = std::time::Instant::now();
-    let hamiltonian = make_hamiltonian(&basis_obj)?;
+    let hamiltonian = make_hamiltonian(&basis)?;
     if output_log {
         py_print_flush(&format!(
             "Done in {:.1}s ({} threads)\n",
@@ -103,38 +100,24 @@ where
         ));
     }
 
-    // Extract basis data
-    let num_sites = basis_obj.num_sites();
-    let mut basis = Vec::with_capacity(dim);
-    for i in 0..dim {
-        basis.push(basis_obj.basis_state_at(i));
-    }
-    let inverse_basis = basis_obj.inverse_basis().clone();
-    let site_base = basis_obj.site_base().to_vec();
-    let local_dims: Vec<usize> = (0..num_sites)
-        .map(|site| basis_obj.local_dim(site))
-        .collect();
+    // Extract basis info
+    let num_sites = basis.num_sites();
+    let site_base = basis.site_base.clone();
+    let local_dims = basis.local_dims.clone();
 
-    // Build the sector builder
-    let sector_builder = make_sector_builder();
-
-    // Create the initial cached basis
-    let current_cached_basis = CachedBasis {
-        dim,
-        basis,
-        inverse_basis,
-    };
+    // Box the model for trait object storage
+    let model: Box<dyn QuantumModel> = Box::new(model);
 
     // Initialize basis_cache with the current sector
     let mut basis_cache = HashMap::new();
-    basis_cache.insert(current_quantum_numbers.clone(), current_cached_basis);
+    basis_cache.insert(current_quantum_numbers.clone(), basis);
 
     let basis_info = BasisInfo {
         num_sites,
         site_base,
         local_dims,
         current_quantum_numbers,
-        sector_builder,
+        model,
         basis_cache,
     };
 

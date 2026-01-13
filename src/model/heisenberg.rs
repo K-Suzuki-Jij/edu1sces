@@ -1,7 +1,11 @@
-use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
+
+use crate::basis::Basis;
+use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
+use crate::model::quantum_model::QuantumModel;
 
 /// Spin-S Heisenberg model with Sz conservation (U(1))
 #[pyclass]
@@ -254,6 +258,150 @@ impl HeisenbergModel {
 
         let szsz = csr_mul(1.0, &sz, 1.0, &sz)?;
         csr_add(hz, &sz, d, &szsz)
+    }
+}
+
+impl QuantumModel for HeisenbergModel {
+    fn num_sites(&self) -> usize {
+        self.num_sites
+    }
+
+    fn local_dim(&self, site: usize) -> usize {
+        (self.two_s_list[site] as usize) + 1
+    }
+
+    /// Return quantum numbers [2*sz] for a local state at a given site.
+    /// For spin S, local states are 0..=2S corresponding to sz = S, S-1, ..., -S
+    /// local_state=0 → sz=+S, local_state=2S → sz=-S
+    fn quantum_numbers(&self, site: usize, local_state: usize) -> Vec<i32> {
+        let two_s = self.two_s_list[site];
+        // sz = S - local_state, so 2*sz = 2S - 2*local_state
+        let sz2 = two_s - 2 * (local_state as i32);
+        vec![sz2]
+    }
+
+    /// Build basis for sector with quantum numbers [2*total_sz].
+    fn build_basis(&self, target_quantum_numbers: &[i32]) -> Result<Basis> {
+        let total_sz2 = target_quantum_numbers[0];
+
+        // Validate total_sz
+        let sum_two_s: i32 = self.two_s_list.iter().sum();
+        if ((sum_two_s - total_sz2) & 1) != 0 {
+            bail!(
+                "parity mismatch: sum(2S) = {} but 2*total_sz = {}",
+                sum_two_s,
+                total_sz2
+            );
+        }
+
+        let min_two_m: i32 = self.two_s_list.iter().map(|&s| -s).sum();
+        let max_two_m: i32 = self.two_s_list.iter().map(|&s| s).sum();
+
+        if total_sz2 < min_two_m || total_sz2 > max_two_m {
+            bail!(
+                "total_sz = {} out of range [{}, {}]",
+                total_sz2 as f64 / 2.0,
+                min_two_m as f64 / 2.0,
+                max_two_m as f64 / 2.0
+            );
+        }
+
+        let num_sites = self.num_sites;
+
+        // Build site_base and local_dims
+        let mut site_base = Vec::with_capacity(num_sites);
+        let mut local_dims = Vec::with_capacity(num_sites);
+        let mut site_stride: i128 = 1;
+        for &two_s in self.two_s_list.iter() {
+            site_base.push(site_stride);
+            let local_dim = (two_s as usize) + 1;
+            local_dims.push(local_dim);
+            site_stride = site_stride
+                .checked_mul(local_dim as i128)
+                .ok_or_else(|| anyhow::anyhow!("i128 overflow"))?;
+        }
+
+        // Precompute suffix bounds for pruning
+        let mut suffix_min_sz2 = vec![0; num_sites + 1];
+        let mut suffix_max_sz2 = vec![0; num_sites + 1];
+        for i in (0..num_sites).rev() {
+            let two_s = self.two_s_list[i];
+            suffix_min_sz2[i] = suffix_min_sz2[i + 1] - two_s;
+            suffix_max_sz2[i] = suffix_max_sz2[i + 1] + two_s;
+        }
+
+        let mut basis = Vec::new();
+
+        fn dfs(
+            site: usize,
+            two_s_list: &[i32],
+            site_base: &[i128],
+            suffix_min_sz2: &[i32],
+            suffix_max_sz2: &[i32],
+            total_sz2_target: i32,
+            sz2_sum: i32,
+            basis_code: i128,
+            out: &mut Vec<i128>,
+        ) {
+            if site == two_s_list.len() {
+                if sz2_sum == total_sz2_target {
+                    out.push(basis_code);
+                }
+                return;
+            }
+
+            let two_s = two_s_list[site];
+            let min_sz2 = -two_s;
+            let max_sz2 = two_s;
+
+            let remain_min = suffix_min_sz2[site + 1];
+            let remain_max = suffix_max_sz2[site + 1];
+
+            let need = total_sz2_target - sz2_sum;
+            if need < min_sz2 + remain_min || need > max_sz2 + remain_max {
+                return;
+            }
+
+            let base = site_base[site];
+
+            let mut sz2 = min_sz2;
+            while sz2 <= max_sz2 {
+                let digit = ((two_s - sz2) / 2) as i128;
+                dfs(
+                    site + 1,
+                    two_s_list,
+                    site_base,
+                    suffix_min_sz2,
+                    suffix_max_sz2,
+                    total_sz2_target,
+                    sz2_sum + sz2,
+                    basis_code + digit * base,
+                    out,
+                );
+                sz2 += 2;
+            }
+        }
+
+        dfs(
+            0,
+            &self.two_s_list,
+            &site_base,
+            &suffix_min_sz2,
+            &suffix_max_sz2,
+            total_sz2,
+            0,
+            0i128,
+            &mut basis,
+        );
+
+        basis.sort_unstable();
+
+        let mut inverse_basis = AHashMap::with_capacity(basis.len());
+        for (i, &basis_code) in basis.iter().enumerate() {
+            inverse_basis.insert(basis_code, i);
+        }
+
+        Ok(Basis::new(basis, inverse_basis, site_base, local_dims))
     }
 }
 

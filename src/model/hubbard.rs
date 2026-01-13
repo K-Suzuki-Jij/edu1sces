@@ -1,7 +1,11 @@
-use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
+
+use crate::basis::Basis;
+use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
+use crate::model::quantum_model::QuantumModel;
 
 /// Hubbard model with U(1) particle-number conservation and Sz conservation
 #[pyclass]
@@ -312,6 +316,161 @@ impl HubbardModel {
 
         let term1 = csr_add(u, &n_up_n_down, coeff_up, &n_up)?;
         csr_add(1.0, &term1, coeff_down, &n_down)
+    }
+}
+
+impl QuantumModel for HubbardModel {
+    fn num_sites(&self) -> usize {
+        self.num_sites
+    }
+
+    fn local_dim(&self, _site: usize) -> usize {
+        4 // |vac>, |up>, |down>, |updown>
+    }
+
+    /// Return quantum numbers [n, 2*sz] for a local state.
+    /// Local states: 0=|vac>, 1=|up>, 2=|dn>, 3=|updn>
+    fn quantum_numbers(&self, _site: usize, local_state: usize) -> Vec<i32> {
+        match local_state {
+            0 => vec![0, 0],  // |vac>: n=0, 2*sz=0
+            1 => vec![1, 1],  // |up>: n=1, 2*sz=+1
+            2 => vec![1, -1], // |dn>: n=1, 2*sz=-1
+            3 => vec![2, 0],  // |updn>: n=2, 2*sz=0
+            _ => panic!("invalid local_state: {}", local_state),
+        }
+    }
+
+    /// Build basis for sector with quantum numbers [num_electrons, 2*total_sz].
+    fn build_basis(&self, target_quantum_numbers: &[i32]) -> Result<Basis> {
+        let num_electrons = target_quantum_numbers[0] as usize;
+        let total_sz2 = target_quantum_numbers[1];
+
+        // Validate parity: N_up = (N + 2Sz)/2, N_dn = (N - 2Sz)/2 must be integers
+        let n = num_electrons as i32;
+        if ((n + total_sz2) & 1) != 0 || ((n - total_sz2) & 1) != 0 {
+            bail!(
+                "parity mismatch: num_electrons = {} but 2*total_sz = {}",
+                num_electrons,
+                total_sz2
+            );
+        }
+
+        let num_sites = self.num_sites;
+
+        // site_base: each site has 4 states (|vac>, |up>, |dn>, |updn>)
+        let mut site_base = Vec::with_capacity(num_sites);
+        let local_dims = vec![4; num_sites];
+        let mut stride: i128 = 1;
+        for _ in 0..num_sites {
+            site_base.push(stride);
+            stride = stride
+                .checked_mul(4)
+                .ok_or_else(|| anyhow::anyhow!("i128 overflow"))?;
+        }
+
+        // Precompute suffix bounds for pruning
+        let mut suffix_min_n = vec![0i32; num_sites + 1];
+        let mut suffix_max_n = vec![0i32; num_sites + 1];
+        let mut suffix_min_sz2 = vec![0i32; num_sites + 1];
+        let mut suffix_max_sz2 = vec![0i32; num_sites + 1];
+        for i in (0..num_sites).rev() {
+            suffix_min_n[i] = suffix_min_n[i + 1];
+            suffix_max_n[i] = suffix_max_n[i + 1] + 2;
+            suffix_min_sz2[i] = suffix_min_sz2[i + 1] - 1;
+            suffix_max_sz2[i] = suffix_max_sz2[i + 1] + 1;
+        }
+
+        let mut basis = Vec::new();
+
+        fn dfs(
+            site: usize,
+            num_sites: usize,
+            site_base: &[i128],
+            suffix_min_n: &[i32],
+            suffix_max_n: &[i32],
+            suffix_min_sz2: &[i32],
+            suffix_max_sz2: &[i32],
+            target_n: i32,
+            target_sz2: i32,
+            n_sum: i32,
+            sz2_sum: i32,
+            basis_packed: i128,
+            out: &mut Vec<i128>,
+        ) {
+            if site == num_sites {
+                if n_sum == target_n && sz2_sum == target_sz2 {
+                    out.push(basis_packed);
+                }
+                return;
+            }
+
+            const DN: [i32; 4] = [0, 1, 1, 2];
+            const DSZ2: [i32; 4] = [0, 1, -1, 0];
+
+            let remain_min_n = suffix_min_n[site + 1];
+            let remain_max_n = suffix_max_n[site + 1];
+            let remain_min_sz2 = suffix_min_sz2[site + 1];
+            let remain_max_sz2 = suffix_max_sz2[site + 1];
+
+            let base = site_base[site];
+
+            for d in 0..4 {
+                let nn = n_sum + DN[d];
+                let ss = sz2_sum + DSZ2[d];
+
+                let need_n = target_n - nn;
+                let need_sz2 = target_sz2 - ss;
+
+                if need_n < remain_min_n || need_n > remain_max_n {
+                    continue;
+                }
+                if need_sz2 < remain_min_sz2 || need_sz2 > remain_max_sz2 {
+                    continue;
+                }
+
+                dfs(
+                    site + 1,
+                    num_sites,
+                    site_base,
+                    suffix_min_n,
+                    suffix_max_n,
+                    suffix_min_sz2,
+                    suffix_max_sz2,
+                    target_n,
+                    target_sz2,
+                    nn,
+                    ss,
+                    basis_packed + (d as i128) * base,
+                    out,
+                );
+            }
+        }
+
+        let target_n = num_electrons as i32;
+        dfs(
+            0,
+            num_sites,
+            &site_base,
+            &suffix_min_n,
+            &suffix_max_n,
+            &suffix_min_sz2,
+            &suffix_max_sz2,
+            target_n,
+            total_sz2,
+            0,
+            0,
+            0i128,
+            &mut basis,
+        );
+
+        basis.sort_unstable();
+
+        let mut inverse_basis = AHashMap::with_capacity(basis.len());
+        for (i, &basis_code) in basis.iter().enumerate() {
+            inverse_basis.insert(basis_code, i);
+        }
+
+        Ok(Basis::new(basis, inverse_basis, site_base, local_dims))
     }
 }
 

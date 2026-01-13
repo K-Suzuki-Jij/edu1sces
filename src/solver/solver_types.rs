@@ -1,35 +1,14 @@
-use ahash::AHashMap;
 use anyhow::Result;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
-use crate::basis::find_local_basis;
+use crate::basis::Basis;
 use crate::blas::{
     csr_transpose, dot, CsrMatrix, InverseIterationLog, InverseIterationParameters, LanczosLog,
 };
+use crate::model::QuantumModel;
 use crate::utility::rayon_pool::build_pool;
-
-/// Cached basis for a specific quantum number sector.
-pub struct CachedBasis {
-    /// Hilbert space dimension
-    pub dim: usize,
-    /// Basis states
-    pub basis: Vec<i128>,
-    /// Inverse basis mapping (state -> index)
-    pub inverse_basis: AHashMap<i128, usize>,
-}
-
-/// Trait for building basis in different quantum number sectors.
-pub trait LocalStateLabels: Send + Sync {
-    /// Return the quantum numbers for a local state at a given site.
-    /// For Hubbard: [n, 2*sz]
-    /// For Heisenberg: [2*sz]
-    fn quantum_numbers(&self, site: usize, local_state: usize) -> Vec<i32>;
-
-    /// Build a basis for the specified quantum number sector.
-    fn build_basis(&self, target_quantum_numbers: &[i32]) -> Result<CachedBasis>;
-}
 
 /// Basis information required for expectation value calculations.
 pub struct BasisInfo {
@@ -41,10 +20,10 @@ pub struct BasisInfo {
     pub local_dims: Vec<usize>,
     /// Current sector's quantum numbers
     pub current_quantum_numbers: Vec<i32>,
-    /// Sector builder for constructing bases in different sectors
-    pub sector_builder: Box<dyn LocalStateLabels>,
+    /// Model for constructing bases in different sectors
+    pub model: Box<dyn QuantumModel>,
     /// Cache of bases for different quantum number sectors
-    pub basis_cache: HashMap<Vec<i32>, CachedBasis>,
+    pub basis_cache: HashMap<Vec<i32>, Basis>,
 }
 
 impl BasisInfo {
@@ -53,7 +32,7 @@ impl BasisInfo {
     pub fn ensure_basis_exists(&mut self, quantum_numbers: &[i32]) -> Result<()> {
         let qn_vec = quantum_numbers.to_vec();
         if !self.basis_cache.contains_key(&qn_vec) {
-            let new_basis = self.sector_builder.build_basis(quantum_numbers)?;
+            let new_basis = self.model.build_basis(quantum_numbers)?;
             self.basis_cache.insert(qn_vec, new_basis);
         }
         Ok(())
@@ -61,7 +40,7 @@ impl BasisInfo {
 
     /// Get a reference to a cached basis.
     /// Call `ensure_basis_exists` first.
-    pub fn get_basis(&self, quantum_numbers: &[i32]) -> Result<&CachedBasis> {
+    pub fn get_basis(&self, quantum_numbers: &[i32]) -> Result<&Basis> {
         self.basis_cache
             .get(quantum_numbers)
             .ok_or_else(|| anyhow::anyhow!("basis not found in cache for {:?}", quantum_numbers))
@@ -105,8 +84,6 @@ impl SolverResult {
         num_threads: usize,
     ) -> Result<f64> {
         let current_qn = self.basis_info.current_quantum_numbers.clone();
-        let site_base = self.basis_info.site_base[site];
-        let local_dim = self.basis_info.local_dims[site];
 
         // Ensure basis exists (should already be cached from solve)
         self.basis_info.ensure_basis_exists(&current_qn)?;
@@ -117,8 +94,7 @@ impl SolverResult {
         // Compute M|psi>
         let m_psi = self.apply_local_op_to_eigenvector(
             local_op,
-            site_base,
-            local_dim,
+            site,
             &current_qn,
             &current_qn,
             &pool,
@@ -155,10 +131,6 @@ impl SolverResult {
         let transitions_op2 = self.compute_all_quantum_number_transitions(op2, site2);
 
         let current_qn = self.basis_info.current_quantum_numbers.clone();
-        let site_base1 = self.basis_info.site_base[site1];
-        let site_base2 = self.basis_info.site_base[site2];
-        let local_dim1 = self.basis_info.local_dims[site1];
-        let local_dim2 = self.basis_info.local_dims[site2];
 
         // Collect all intermediate quantum numbers that will be needed
         let mut intermediate_qns: Vec<Vec<i32>> = Vec::new();
@@ -195,8 +167,7 @@ impl SolverResult {
             // O2|psi>: current -> intermediate
             let vec_o2_psi = self.apply_local_op_to_eigenvector(
                 op2,
-                site_base2,
-                local_dim2,
+                site2,
                 &current_qn,
                 intermediate_qn,
                 &pool,
@@ -206,8 +177,7 @@ impl SolverResult {
             // Using transpose: O1† = O1^T, so we apply the transposed matrix
             let vec_o1dag_psi = self.apply_local_op_to_eigenvector(
                 &op1_transpose,
-                site_base1,
-                local_dim1,
+                site1,
                 &current_qn,
                 intermediate_qn,
                 &pool,
@@ -240,8 +210,8 @@ impl SolverResult {
                 let col = local_op.cols[p];
                 if local_op.vals[p].abs() > 1e-14 {
                     // Found transition: col -> row
-                    let qn_in = self.basis_info.sector_builder.quantum_numbers(site, col);
-                    let qn_out = self.basis_info.sector_builder.quantum_numbers(site, row);
+                    let qn_in = self.basis_info.model.quantum_numbers(site, col);
+                    let qn_out = self.basis_info.model.quantum_numbers(site, row);
                     let delta_qn: Vec<i32> = qn_out
                         .iter()
                         .zip(qn_in.iter())
@@ -269,8 +239,7 @@ impl SolverResult {
     fn apply_local_op_to_eigenvector(
         &self,
         local_op: &CsrMatrix,
-        site_base: i128,
-        local_dim: usize,
+        site: usize,
         in_qn: &[i32],
         out_qn: &[i32],
         pool: &rayon::ThreadPool,
@@ -278,13 +247,14 @@ impl SolverResult {
         let out_basis = self.basis_info.get_basis(out_qn)?;
         let in_basis = self.basis_info.get_basis(in_qn)?;
         let eigenvector = &self.eigenvector;
+        let site_base = out_basis.site_base[site];
 
         Ok(pool.install(|| {
             out_basis
                 .basis
                 .par_iter()
                 .map(|&basis_out| {
-                    let local_basis_out = find_local_basis(basis_out, site_base, local_dim);
+                    let local_basis_out = out_basis.find_local_basis(basis_out, site);
 
                     let mut temp_val = 0.0;
 

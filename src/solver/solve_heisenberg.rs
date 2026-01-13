@@ -1,48 +1,10 @@
 use anyhow::Result;
 use pyo3::prelude::*;
 
-use crate::basis::HeisenbergBasis;
 use crate::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use crate::model::HeisenbergModel;
-use crate::solver::solver_core::solve_with_basis_and_hamiltonian;
-use crate::solver::{CachedBasis, LocalStateLabels, SolverParameters, SolverResult};
-
-/// Sector builder for Heisenberg model.
-/// Builds basis for sectors with specified 2*Sz.
-pub struct HeisenbergSectorBuilder {
-    model: HeisenbergModel,
-}
-
-impl HeisenbergSectorBuilder {
-    pub fn new(model: HeisenbergModel) -> Self {
-        Self { model }
-    }
-}
-
-impl LocalStateLabels for HeisenbergSectorBuilder {
-    /// Return quantum numbers [2*sz] for a local state at a given site.
-    /// For spin S, local states are 0..=2S corresponding to sz = S, S-1, ..., -S
-    /// local_state=0 → sz=+S, local_state=2S → sz=-S
-    fn quantum_numbers(&self, site: usize, local_state: usize) -> Vec<i32> {
-        let two_s = self.model.two_s_list[site];
-        // sz = S - local_state, so 2*sz = 2S - 2*local_state
-        let sz2 = two_s - 2 * (local_state as i32);
-        vec![sz2]
-    }
-
-    /// Build basis for sector with quantum numbers [2*total_sz].
-    fn build_basis(&self, target_quantum_numbers: &[i32]) -> Result<CachedBasis> {
-        let total_sz = target_quantum_numbers[0] as f64 / 2.0;
-
-        let heisenberg_basis = HeisenbergBasis::new(self.model.clone(), total_sz)?;
-
-        Ok(CachedBasis {
-            dim: heisenberg_basis.basis.len(),
-            basis: heisenberg_basis.basis,
-            inverse_basis: heisenberg_basis.inverse_basis,
-        })
-    }
-}
+use crate::solver::solver_core::solve_model;
+use crate::solver::{SolverParameters, SolverResult};
 
 /// Solve the Heisenberg model to find the ground state energy and eigenvector.
 #[pyfunction]
@@ -58,10 +20,9 @@ pub fn solve_heisenberg(
     let total_sz2 = (2.0 * target_total_sz).round() as i32;
     let current_quantum_numbers = vec![total_sz2];
 
-    solve_with_basis_and_hamiltonian(
-        || HeisenbergBasis::new(model.clone(), target_total_sz),
+    solve_model(
+        model_clone,
         |basis| make_heisenberg_hamiltonian(basis, model, num_threads),
-        move || Box::new(HeisenbergSectorBuilder::new(model_clone)),
         current_quantum_numbers,
         params,
     )

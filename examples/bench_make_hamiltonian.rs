@@ -1,12 +1,12 @@
 use std::time::Instant;
 
-use edu1sces::basis::{HeisenbergBasis, HilbertBasis};
+use edu1sces::basis::Basis;
 use edu1sces::examples_util::build_heisenberg_chain;
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
-use edu1sces::model::HeisenbergModel;
+use edu1sces::model::{HeisenbergModel, QuantumModel};
 
 fn benchmark(
-    basis: &HeisenbergBasis,
+    basis: &Basis,
     model: &HeisenbergModel,
     num_threads: usize,
     num_iterations: usize,
@@ -44,7 +44,9 @@ fn main() {
 
     println!("Building basis...");
     let t0 = Instant::now();
-    let basis = HeisenbergBasis::new(model.clone(), total_sz).unwrap();
+    // target_quantum_numbers = [2*Sz]
+    let total_sz2 = (2.0_f64 * total_sz).round() as i32;
+    let basis = model.build_basis(&[total_sz2]).unwrap();
     let dt = t0.elapsed();
     println!("  dim={}, time={:?}", basis.dim(), dt);
 
