@@ -1,4 +1,4 @@
-use crate::basis::{HeisenbergBasis, HilbertBasis};
+use crate::basis::Basis;
 use crate::blas::CsrMatrix;
 use crate::hamiltonian::{
     make_hamiltonian, make_intersite_elements, make_onsite_elements, HamiltonianElementGenerator,
@@ -62,11 +62,11 @@ impl HeisenbergHamiltonianElementGenerator {
     }
 }
 
-impl HamiltonianElementGenerator<HeisenbergBasis> for HeisenbergHamiltonianElementGenerator {
+impl HamiltonianElementGenerator for HeisenbergHamiltonianElementGenerator {
     fn make_elements(
         &self,
         basis_state: i128,
-        basis: &HeisenbergBasis,
+        basis: &Basis,
         holder: &mut TransitionStateHolder,
     ) -> Result<()> {
         holder.vals.clear();
@@ -133,7 +133,7 @@ impl HamiltonianElementGenerator<HeisenbergBasis> for HeisenbergHamiltonianEleme
 }
 
 pub fn make_heisenberg_hamiltonian(
-    basis: &HeisenbergBasis,
+    basis: &Basis,
     model: &HeisenbergModel,
     num_threads: usize,
 ) -> Result<CsrMatrix> {
@@ -147,6 +147,7 @@ pub fn make_heisenberg_hamiltonian(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::QuantumModel;
     use std::collections::HashMap;
 
     #[test]
@@ -195,7 +196,8 @@ mod tests {
             exchange_z,
         };
 
-        let basis = HeisenbergBasis::new(model.clone(), 0.0).unwrap();
+        // target_quantum_numbers = [2*Sz] = [0]
+        let basis = model.build_basis(&[0]).unwrap();
 
         let h = make_heisenberg_hamiltonian(&basis, &model, 2).unwrap();
 
@@ -236,7 +238,8 @@ mod tests {
             exchange_z: HashMap::new(),
         };
 
-        let basis = HeisenbergBasis::new(model.clone(), 1.0).unwrap();
+        // target_quantum_numbers = [2*Sz] = [2]  (Sz=+1 -> 2*Sz=2)
+        let basis = model.build_basis(&[2]).unwrap();
 
         let h = make_heisenberg_hamiltonian(&basis, &model, 2).unwrap();
 

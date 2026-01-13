@@ -1,51 +1,10 @@
 use anyhow::Result;
 use pyo3::prelude::*;
 
-use crate::basis::HubbardBasis;
 use crate::hamiltonian::hubbard_hamiltonian::make_hubbard_hamiltonian;
 use crate::model::HubbardModel;
-use crate::solver::solver_core::solve_with_basis_and_hamiltonian;
-use crate::solver::{CachedBasis, LocalStateLabels, SolverParameters, SolverResult};
-
-/// Sector builder for Hubbard model.
-/// Builds basis for sectors with specified (num_electrons, 2*Sz).
-pub struct HubbardSectorBuilder {
-    model: HubbardModel,
-}
-
-impl HubbardSectorBuilder {
-    pub fn new(model: HubbardModel) -> Self {
-        Self { model }
-    }
-}
-
-impl LocalStateLabels for HubbardSectorBuilder {
-    /// Return quantum numbers [n, 2*sz] for a local state.
-    /// Local states: 0=|vac>, 1=|up>, 2=|dn>, 3=|updn>
-    fn quantum_numbers(&self, _site: usize, local_state: usize) -> Vec<i32> {
-        match local_state {
-            0 => vec![0, 0],  // |vac>: n=0, 2*sz=0
-            1 => vec![1, 1],  // |up>: n=1, 2*sz=+1
-            2 => vec![1, -1], // |dn>: n=1, 2*sz=-1
-            3 => vec![2, 0],  // |updn>: n=2, 2*sz=0
-            _ => panic!("invalid local_state: {}", local_state),
-        }
-    }
-
-    /// Build basis for sector with quantum numbers [num_electrons, 2*total_sz].
-    fn build_basis(&self, target_quantum_numbers: &[i32]) -> Result<CachedBasis> {
-        let num_electrons = target_quantum_numbers[0] as usize;
-        let total_sz = target_quantum_numbers[1] as f64 / 2.0;
-
-        let hubbard_basis = HubbardBasis::new(self.model.clone(), num_electrons, total_sz)?;
-
-        Ok(CachedBasis {
-            dim: hubbard_basis.basis.len(),
-            basis: hubbard_basis.basis,
-            inverse_basis: hubbard_basis.inverse_basis,
-        })
-    }
-}
+use crate::solver::solver_core::solve_model;
+use crate::solver::{SolverParameters, SolverResult};
 
 /// Solve the Hubbard model to find the ground state energy and eigenvector.
 #[pyfunction]
@@ -62,10 +21,9 @@ pub fn solve_hubbard(
     let total_sz2 = (2.0 * target_total_sz).round() as i32;
     let current_quantum_numbers = vec![num_electrons as i32, total_sz2];
 
-    solve_with_basis_and_hamiltonian(
-        || HubbardBasis::new(model.clone(), num_electrons, target_total_sz),
+    solve_model(
+        model_clone,
         |basis| make_hubbard_hamiltonian(basis, model, num_threads),
-        move || Box::new(HubbardSectorBuilder::new(model_clone)),
         current_quantum_numbers,
         params,
     )

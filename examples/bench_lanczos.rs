@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use edu1sces::basis::{HeisenbergBasis, HilbertBasis, HubbardBasis};
 use edu1sces::blas::{lanczos, CsrMatrix, LanczosParameters};
 use edu1sces::examples_util::{build_heisenberg_chain, build_hubbard_chain};
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use edu1sces::hamiltonian::hubbard_hamiltonian::make_hubbard_hamiltonian;
+use edu1sces::model::QuantumModel;
 
 fn benchmark_lanczos(
     hamiltonian: &CsrMatrix,
@@ -110,7 +110,9 @@ fn main() {
 
             println!("Building basis...");
             let t0 = Instant::now();
-            let basis = HeisenbergBasis::new(model.clone(), heisenberg_total_sz).unwrap();
+            // target_quantum_numbers = [2*Sz]
+            let total_sz2 = (2.0_f64 * heisenberg_total_sz).round() as i32;
+            let basis = model.build_basis(&[total_sz2]).unwrap();
             let dt = t0.elapsed();
             println!("  dim={}, time={:?}", basis.dim(), dt);
 
@@ -149,8 +151,11 @@ fn main() {
 
             println!("Building basis...");
             let t0 = Instant::now();
-            let basis =
-                HubbardBasis::new(model.clone(), hubbard_num_electrons, hubbard_total_sz).unwrap();
+            // target_quantum_numbers = [N, 2*Sz]
+            let total_sz2 = (2.0_f64 * hubbard_total_sz).round() as i32;
+            let basis = model
+                .build_basis(&[hubbard_num_electrons as i32, total_sz2])
+                .unwrap();
             let dt = t0.elapsed();
             println!("  dim={}, time={:?}", basis.dim(), dt);
 

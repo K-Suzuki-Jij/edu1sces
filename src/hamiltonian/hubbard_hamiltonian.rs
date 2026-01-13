@@ -1,4 +1,4 @@
-use crate::basis::{HilbertBasis, HubbardBasis};
+use crate::basis::Basis;
 use crate::blas::CsrMatrix;
 use crate::hamiltonian::{
     make_hamiltonian, make_intersite_elements, make_onsite_elements, HamiltonianElementGenerator,
@@ -72,11 +72,11 @@ impl HubbardHamiltonianElementGenerator {
     }
 }
 
-impl HamiltonianElementGenerator<HubbardBasis> for HubbardHamiltonianElementGenerator {
+impl HamiltonianElementGenerator for HubbardHamiltonianElementGenerator {
     fn make_elements(
         &self,
         basis_state: i128,
-        basis: &HubbardBasis,
+        basis: &Basis,
         holder: &mut TransitionStateHolder,
     ) -> Result<()> {
         holder.vals.clear();
@@ -269,7 +269,7 @@ impl HamiltonianElementGenerator<HubbardBasis> for HubbardHamiltonianElementGene
 }
 
 pub fn make_hubbard_hamiltonian(
-    basis: &HubbardBasis,
+    basis: &Basis,
     model: &HubbardModel,
     num_threads: usize,
 ) -> Result<CsrMatrix> {
@@ -283,7 +283,7 @@ pub fn make_hubbard_hamiltonian(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::basis::HilbertBasis;
+    use crate::model::QuantumModel;
     use std::collections::HashMap;
 
     fn make_model(num_sites: usize) -> HubbardModel {
@@ -304,7 +304,8 @@ mod tests {
         // Two sites, N=2, Sz=0, no hopping, no U
         // All states should have zero energy
         let model = make_model(2);
-        let basis = HubbardBasis::new(model.clone(), 2, 0.0).unwrap();
+        // target_quantum_numbers = [N, 2*Sz] = [2, 0]
+        let basis = model.build_basis(&[2, 0]).unwrap();
 
         let h = make_hubbard_hamiltonian(&basis, &model, 1).unwrap();
 
@@ -325,7 +326,8 @@ mod tests {
         let mut model = make_model(2);
         model.u_list = vec![4.0, 4.0];
 
-        let basis = HubbardBasis::new(model.clone(), 2, 0.0).unwrap();
+        // target_quantum_numbers = [N, 2*Sz] = [2, 0]
+        let basis = model.build_basis(&[2, 0]).unwrap();
         let h = make_hubbard_hamiltonian(&basis, &model, 1).unwrap();
 
         assert_eq!(h.row_dim, 4);
@@ -374,7 +376,8 @@ mod tests {
         )
         .unwrap();
 
-        let basis = HubbardBasis::new(model.clone(), 1, 0.5).unwrap();
+        // target_quantum_numbers = [N, 2*Sz] = [1, 1]  (Sz=0.5 -> 2*Sz=1)
+        let basis = model.build_basis(&[1, 1]).unwrap();
         assert_eq!(basis.dim(), 2);
 
         let h = make_hubbard_hamiltonian(&basis, &model, 1).unwrap();
@@ -427,7 +430,8 @@ mod tests {
         )
         .unwrap();
 
-        let basis = HubbardBasis::new(model.clone(), 2, 0.0).unwrap();
+        // target_quantum_numbers = [N, 2*Sz] = [2, 0]
+        let basis = model.build_basis(&[2, 0]).unwrap();
         assert_eq!(basis.dim(), 4);
 
         let h = make_hubbard_hamiltonian(&basis, &model, 1).unwrap();
