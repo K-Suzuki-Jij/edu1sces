@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
+use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
+
 /// Kondo lattice model with
 /// - U(1) particle-number conservation
 /// - U(1) spin symmetry (Sz conservation)
@@ -269,6 +271,311 @@ impl KondoLatticeModel {
 
         Ok(dp[total_num_electrons as usize][(total_two_sz + two_sz_offset) as usize])
     }
+
+    // =========================================================================
+    // Local operators
+    //
+    // Local basis ordering (for spin S):
+    //   0  -> |S>|vac>
+    //   1  -> |S>|up>
+    //   2  -> |S>|down>
+    //   3  -> |S>|updown>
+    //   4  -> |S-1>|vac>
+    //   5  -> |S-1>|up>
+    //   6  -> |S-1>|down>
+    //   7  -> |S-1>|updown>
+    //   ...
+    //   4k + 0 -> |S-k>|vac>
+    //   4k + 1 -> |S-k>|up>
+    //   4k + 2 -> |S-k>|down>
+    //   4k + 3 -> |S-k>|updown>
+    //
+    // where k = 0, 1, ..., 2S
+    // Total local dimension = 4 * (2S + 1)
+    // =========================================================================
+
+    /// c_up (annihilation): acts only on the conduction electron part
+    /// |m>|up> -> |m>|vac>, |m>|updown> -> |m>|down>
+    /// With fermion sign: c_up |updown> = +|down> (up is first)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_up(&self, site: usize) -> Result<CsrMatrix> {
+        if site >= self.num_sites {
+            bail!(
+                "site {} out of range (num_sites = {})",
+                site,
+                self.num_sites
+            );
+        }
+
+        let two_s = self.two_s_list[site];
+        let dim_spin = (two_s as usize) + 1;
+        let dim = dim_spin * 4;
+
+        let mut rows = Vec::with_capacity(dim + 1);
+        rows.push(0);
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for row in 0..dim {
+            let e_row = row % 4;
+            let base = row - e_row;
+
+            match e_row {
+                // |vac><up|
+                0 => {
+                    cols.push(base + 1);
+                    vals.push(1.0);
+                }
+                // |down><updown|
+                2 => {
+                    cols.push(base + 3);
+                    vals.push(1.0);
+                }
+                _ => {}
+            }
+
+            rows.push(vals.len());
+        }
+
+        Ok(CsrMatrix {
+            row_dim: dim,
+            col_dim: dim,
+            rows,
+            cols,
+            vals,
+        })
+    }
+
+    /// c_down (annihilation): acts only on the conduction electron part
+    /// |m>|down> -> |m>|vac>, |m>|updown> -> -|m>|up>
+    /// With fermion sign: c_down |updown> = -|up> (down must pass up)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_down(&self, site: usize) -> Result<CsrMatrix> {
+        if site >= self.num_sites {
+            bail!(
+                "site {} out of range (num_sites = {})",
+                site,
+                self.num_sites
+            );
+        }
+
+        let two_s = self.two_s_list[site];
+        let dim_spin = (two_s as usize) + 1;
+        let dim = dim_spin * 4;
+
+        let mut rows = Vec::with_capacity(dim + 1);
+        rows.push(0);
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for row in 0..dim {
+            let e_row = row % 4;
+            let base = row - e_row;
+
+            match e_row {
+                // |vac><down|
+                0 => {
+                    cols.push(base + 2);
+                    vals.push(1.0);
+                }
+                // -|up><updown|
+                1 => {
+                    cols.push(base + 3);
+                    vals.push(-1.0);
+                }
+                _ => {}
+            }
+
+            rows.push(vals.len());
+        }
+
+        Ok(CsrMatrix {
+            row_dim: dim,
+            col_dim: dim,
+            rows,
+            cols,
+            vals,
+        })
+    }
+
+    /// c_up^dag (creation) = transpose(c_up)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_up_dag(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_up(site)?)
+    }
+
+    /// c_down^dag (creation) = transpose(c_down)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_down_dag(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_down(site)?)
+    }
+
+    /// n_up = c_up^dag c_up
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_n_up(&self, site: usize) -> Result<CsrMatrix> {
+        let c_up = self.make_local_op_c_up(site)?;
+        let c_up_dag = self.make_local_op_c_up_dag(site)?;
+        csr_mul(1.0, &c_up_dag, 1.0, &c_up)
+    }
+
+    /// n_down = c_down^dag c_down
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_n_down(&self, site: usize) -> Result<CsrMatrix> {
+        let c_down = self.make_local_op_c_down(site)?;
+        let c_down_dag = self.make_local_op_c_down_dag(site)?;
+        csr_mul(1.0, &c_down_dag, 1.0, &c_down)
+    }
+
+    /// n = n_up + n_down (conduction electron number)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_n(&self, site: usize) -> Result<CsrMatrix> {
+        let n_up = self.make_local_op_n_up(site)?;
+        let n_down = self.make_local_op_n_down(site)?;
+        csr_add(1.0, &n_up, 1.0, &n_down)
+    }
+
+    /// Conduction electron Sz = (n_up - n_down) / 2
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_sz(&self, site: usize) -> Result<CsrMatrix> {
+        let n_up = self.make_local_op_n_up(site)?;
+        let n_down = self.make_local_op_n_down(site)?;
+        csr_add(0.5, &n_up, -0.5, &n_down)
+    }
+
+    /// Conduction electron S+ = c_up^dag c_down
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_sp(&self, site: usize) -> Result<CsrMatrix> {
+        let c_up_dag = self.make_local_op_c_up_dag(site)?;
+        let c_down = self.make_local_op_c_down(site)?;
+        csr_mul(1.0, &c_up_dag, 1.0, &c_down)
+    }
+
+    /// Conduction electron S- = c_down^dag c_up = transpose(S+)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_c_sm(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_c_sp(site)?)
+    }
+
+    // =========================================================================
+    // Localized spin operators
+    // =========================================================================
+
+    /// Localized spin Sz operator
+    /// S_z |m>|e> = m |m>|e>
+    /// where m = S, S-1, ..., -S and |e> is the electron state
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_l_sz(&self, site: usize) -> Result<CsrMatrix> {
+        if site >= self.num_sites {
+            bail!(
+                "site {} out of range (num_sites = {})",
+                site,
+                self.num_sites
+            );
+        }
+
+        let two_s = self.two_s_list[site];
+        let dim_spin = (two_s as usize) + 1;
+        let dim = dim_spin * 4;
+
+        let mut rows = Vec::with_capacity(dim + 1);
+        rows.push(0);
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for row in 0..dim {
+            let k = row / 4;
+            let two_m = two_s - 2 * (k as i32); // 2m = 2S - 2k
+
+            // Skip if m = 0 (i.e., two_m == 0)
+            if two_m != 0 {
+                let m = (two_m as f64) / 2.0;
+                cols.push(row);
+                vals.push(m);
+            }
+
+            rows.push(vals.len());
+        }
+
+        Ok(CsrMatrix {
+            row_dim: dim,
+            col_dim: dim,
+            rows,
+            cols,
+            vals,
+        })
+    }
+
+    /// Localized spin S+ operator
+    /// S^+ |m>|e> = sqrt(S(S+1) - m(m+1)) |m+1>|e>
+    /// In our basis: k -> k-1 (since m = S - k, so m+1 corresponds to k-1)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_l_sp(&self, site: usize) -> Result<CsrMatrix> {
+        if site >= self.num_sites {
+            bail!(
+                "site {} out of range (num_sites = {})",
+                site,
+                self.num_sites
+            );
+        }
+
+        let two_s = self.two_s_list[site];
+        let dim_spin = (two_s as usize) + 1;
+        let dim = dim_spin * 4;
+        let s = (two_s as f64) / 2.0;
+
+        let mut rows = Vec::with_capacity(dim + 1);
+        rows.push(0);
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for row in 0..dim {
+            let k = row / 4;
+            let e = row % 4;
+
+            // S^+ raises m by 1, which means k decreases by 1
+            if k > 0 {
+                let m = s - (k as f64); // current m
+                // coefficient: sqrt(S(S+1) - m(m+1))
+                let coeff = (s * (s + 1.0) - m * (m + 1.0)).sqrt();
+                let col = (k - 1) * 4 + e; // target: k-1 block, same electron state
+                cols.push(col);
+                vals.push(coeff);
+            }
+
+            rows.push(vals.len());
+        }
+
+        Ok(CsrMatrix {
+            row_dim: dim,
+            col_dim: dim,
+            rows,
+            cols,
+            vals,
+        })
+    }
+
+    /// Localized spin S- operator = transpose(S+)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_l_sm(&self, site: usize) -> Result<CsrMatrix> {
+        csr_transpose(1.0, &self.make_local_op_l_sp(site)?)
+    }
+
+    /// Localized spin Sx operator = (S+ + S-) / 2
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_l_sx(&self, site: usize) -> Result<CsrMatrix> {
+        let sp = self.make_local_op_l_sp(site)?;
+        let sm = self.make_local_op_l_sm(site)?;
+        csr_add(0.5, &sp, 0.5, &sm)
+    }
+
+    /// Localized spin i*Sy operator = (S+ - S-) / 2
+    /// Returns i*Sy to avoid complex numbers
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_op_l_isy(&self, site: usize) -> Result<CsrMatrix> {
+        let sp = self.make_local_op_l_sp(site)?;
+        let sm = self.make_local_op_l_sm(site)?;
+        csr_add(0.5, &sp, -0.5, &sm)
+    }
 }
 
 #[cfg(test)]
@@ -421,5 +728,157 @@ mod tests {
         assert_eq!(m.calc_dim_u1_sector(2, -1.0).unwrap(), 1);
         assert_eq!(m.calc_dim_u1_sector(2, 0.0).unwrap(), 1);
         assert_eq!(m.calc_dim_u1_sector(2, 1.0).unwrap(), 1);
+    }
+
+    // =========================================================================
+    // Local operator tests
+    // =========================================================================
+
+    fn make_model_s_half() -> KondoLatticeModel {
+        // S = 1/2, local dim = 4 * 2 = 8
+        KondoLatticeModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hopping: HashMap::new(),
+            u_list: vec![0.0],
+            mu_list: vec![0.0],
+            hz_c_list: vec![0.0],
+            hz_f_list: vec![0.0],
+            d_list: vec![0.0],
+            density_density: HashMap::new(),
+            kondo_xy_list: vec![0.0],
+            kondo_z_list: vec![0.0],
+            ff_exchange_xy: HashMap::new(),
+            ff_exchange_z: HashMap::new(),
+        }
+    }
+
+    fn make_model_s_one() -> KondoLatticeModel {
+        // S = 1, local dim = 4 * 3 = 12
+        KondoLatticeModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hopping: HashMap::new(),
+            u_list: vec![0.0],
+            mu_list: vec![0.0],
+            hz_c_list: vec![0.0],
+            hz_f_list: vec![0.0],
+            d_list: vec![0.0],
+            density_density: HashMap::new(),
+            kondo_xy_list: vec![0.0],
+            kondo_z_list: vec![0.0],
+            ff_exchange_xy: HashMap::new(),
+            ff_exchange_z: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn local_op_c_up_s_half() {
+        // S = 1/2: local dim = 8
+        // Basis: |+1/2>|vac>, |+1/2>|up>, |+1/2>|down>, |+1/2>|updown>,
+        //        |-1/2>|vac>, |-1/2>|up>, |-1/2>|down>, |-1/2>|updown>
+        //
+        // c_up acts on electron part only:
+        //   row 0: c_up |+1/2>|up> = |+1/2>|vac>   => col=1
+        //   row 2: c_up |+1/2>|updown> = |+1/2>|down> => col=3
+        //   row 4: c_up |-1/2>|up> = |-1/2>|vac>   => col=5
+        //   row 6: c_up |-1/2>|updown> = |-1/2>|down> => col=7
+        let m = make_model_s_half();
+        let c_up = m.make_local_op_c_up(0).unwrap();
+
+        assert_eq!(c_up.row_dim, 8);
+        assert_eq!(c_up.col_dim, 8);
+        assert_eq!(c_up.rows, vec![0, 1, 1, 2, 2, 3, 3, 4, 4]);
+        assert_eq!(c_up.cols, vec![1, 3, 5, 7]);
+        assert_eq!(c_up.vals, vec![1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn local_op_c_down_s_half() {
+        // c_down acts on electron part only:
+        //   row 0: c_down |+1/2>|down> = |+1/2>|vac>   => col=2
+        //   row 1: c_down |+1/2>|updown> = -|+1/2>|up> => col=3, val=-1
+        //   row 4: c_down |-1/2>|down> = |-1/2>|vac>   => col=6
+        //   row 5: c_down |-1/2>|updown> = -|-1/2>|up> => col=7, val=-1
+        let m = make_model_s_half();
+        let c_down = m.make_local_op_c_down(0).unwrap();
+
+        assert_eq!(c_down.row_dim, 8);
+        assert_eq!(c_down.col_dim, 8);
+        assert_eq!(c_down.rows, vec![0, 1, 2, 2, 2, 3, 4, 4, 4]);
+        assert_eq!(c_down.cols, vec![2, 3, 6, 7]);
+        assert_eq!(c_down.vals, vec![1.0, -1.0, 1.0, -1.0]);
+    }
+
+    #[test]
+    fn local_op_l_sz_s_half() {
+        // S = 1/2: m = +1/2, -1/2
+        // Diagonal: rows 0-3 have m=+1/2, rows 4-7 have m=-1/2
+        let m = make_model_s_half();
+        let l_sz = m.make_local_op_l_sz(0).unwrap();
+
+        assert_eq!(l_sz.row_dim, 8);
+        assert_eq!(l_sz.col_dim, 8);
+        // m=+1/2 for rows 0,1,2,3; m=-1/2 for rows 4,5,6,7
+        assert_eq!(l_sz.rows, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(l_sz.cols, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(l_sz.vals, vec![0.5, 0.5, 0.5, 0.5, -0.5, -0.5, -0.5, -0.5]);
+    }
+
+    #[test]
+    fn local_op_l_sz_s_one() {
+        // S = 1: m = +1, 0, -1
+        // Diagonal: rows 0-3 have m=+1, rows 4-7 have m=0, rows 8-11 have m=-1
+        // m=0 rows should be skipped
+        let m = make_model_s_one();
+        let l_sz = m.make_local_op_l_sz(0).unwrap();
+
+        assert_eq!(l_sz.row_dim, 12);
+        assert_eq!(l_sz.col_dim, 12);
+        // rows 0-3: m=+1, rows 4-7: m=0 (skipped), rows 8-11: m=-1
+        assert_eq!(l_sz.rows, vec![0, 1, 2, 3, 4, 4, 4, 4, 4, 5, 6, 7, 8]);
+        assert_eq!(l_sz.cols, vec![0, 1, 2, 3, 8, 9, 10, 11]);
+        assert_eq!(l_sz.vals, vec![1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn local_op_l_sp_s_half() {
+        // S = 1/2: S^+ |m=-1/2> = sqrt(1/2 * 3/2 - (-1/2)(1/2)) |m=+1/2>
+        //                      = sqrt(3/4 + 1/4) = 1
+        // S^+ raises m by 1, i.e., k decreases by 1 (k=1 -> k=0)
+        // So rows 4-7 (k=1) -> cols 0-3 (k=0)
+        let m = make_model_s_half();
+        let l_sp = m.make_local_op_l_sp(0).unwrap();
+
+        assert_eq!(l_sp.row_dim, 8);
+        assert_eq!(l_sp.col_dim, 8);
+        // rows 0-3: k=0, cannot raise
+        // rows 4-7: k=1, raise to k=0
+        assert_eq!(l_sp.rows, vec![0, 0, 0, 0, 0, 1, 2, 3, 4]);
+        assert_eq!(l_sp.cols, vec![0, 1, 2, 3]);
+        assert_eq!(l_sp.vals, vec![1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn local_op_l_sp_s_one() {
+        // S = 1:
+        // k=0: m=+1, cannot raise further
+        // k=1: m=0, S^+ |0> = sqrt(1*2 - 0*1) |+1> = sqrt(2)
+        // k=2: m=-1, S^+ |-1> = sqrt(1*2 - (-1)*0) |0> = sqrt(2)
+        let m = make_model_s_one();
+        let l_sp = m.make_local_op_l_sp(0).unwrap();
+
+        let sqrt2 = 2.0_f64.sqrt();
+
+        assert_eq!(l_sp.row_dim, 12);
+        assert_eq!(l_sp.col_dim, 12);
+        // rows 0-3: k=0, no contribution
+        // rows 4-7: k=1 -> k=0, coeff=sqrt(2)
+        // rows 8-11: k=2 -> k=1, coeff=sqrt(2)
+        assert_eq!(l_sp.rows, vec![0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(l_sp.cols, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        for &v in &l_sp.vals {
+            assert!((v - sqrt2).abs() < 1e-12);
+        }
     }
 }
