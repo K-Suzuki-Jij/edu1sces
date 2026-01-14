@@ -164,6 +164,111 @@ impl KondoLatticeModel {
             ff_exchange_z,
         })
     }
+
+    /// Dimension of the U(1) sector specified by:
+    /// - total number of conduction electrons `total_num_electrons`
+    /// - total Sz (conduction + localized) `total_sz`
+    #[pyo3(text_signature = "(self, total_num_electrons, total_sz)")]
+    pub fn calc_dim_u1_sector(&self, total_num_electrons: i32, total_sz: f64) -> Result<i128> {
+        let num_sites = self.num_sites;
+
+        if total_num_electrons < 0 || total_num_electrons > (2 * num_sites) as i32 {
+            bail!(
+                "total_num_electrons out of range: {} (valid: 0..={})",
+                total_num_electrons,
+                2 * num_sites
+            );
+        }
+
+        let total_two_sz = (2.0 * total_sz).round() as i32;
+        if ((2.0 * total_sz) - (total_two_sz as f64)).abs() > 1e-12 {
+            bail!("total_sz must be integer or half-integer");
+        }
+
+        // global min/max possible (2*Sz) to size the DP array
+        // For each site: localized two_sz ∈ [-two_s, -two_s+2, ..., two_s]
+        // conduction contribution two_sz_c ∈ {0, +1, -1, 0} (empty, up, down, double)
+        // => per-site two_sz_total ∈ [-(two_s+1), +(two_s+1)]
+        let mut min_two_sz_total = 0i32;
+        let mut max_two_sz_total = 0i32;
+        for &two_s in self.two_s_list.iter() {
+            if two_s < 0 {
+                bail!("two_s_list contains negative value: {}", two_s);
+            }
+            min_two_sz_total -= two_s + 1;
+            max_two_sz_total += two_s + 1;
+        }
+
+        if total_two_sz < min_two_sz_total || total_two_sz > max_two_sz_total {
+            return Ok(0);
+        }
+
+        let two_sz_offset = -min_two_sz_total;
+        let two_sz_range = (max_two_sz_total - min_two_sz_total + 1) as usize;
+
+        // dp[n][idx] = number of ways after processing some sites
+        // where n = total conduction electrons, idx encodes total two_sz via offset.
+        let n_max = 2 * num_sites;
+        let mut dp = vec![vec![0i128; two_sz_range]; n_max + 1];
+        dp[0][two_sz_offset as usize] = 1;
+
+        // Conduction-electron local states: (dn, two_sz_c)
+        let conduction_states = [(0i32, 0i32), (1, 1), (1, -1), (2, 0)];
+
+        for &two_s in self.two_s_list.iter() {
+            // Per-site aggregate: (dn, two_sz_site) -> multiplicity
+            let mut local = HashMap::new();
+
+            let mut two_sz_f = -two_s;
+            while two_sz_f <= two_s {
+                for &(dn, two_sz_c) in conduction_states.iter() {
+                    let key = (dn, two_sz_c + two_sz_f);
+                    *local.entry(key).or_insert(0i128) += 1;
+                }
+                two_sz_f += 2;
+            }
+
+            let mut next = vec![vec![0i128; two_sz_range]; n_max + 1];
+
+            for n in 0..=n_max {
+                for idx in 0..two_sz_range {
+                    let cur = dp[n][idx];
+                    if cur == 0 {
+                        continue;
+                    }
+
+                    let cur_two_sz = (idx as i32) - two_sz_offset;
+
+                    for (&(dn, two_sz_site), &mult) in local.iter() {
+                        let n2_i32 = (n as i32) + dn;
+                        if n2_i32 < 0 || n2_i32 > n_max as i32 {
+                            continue;
+                        }
+                        let n2 = n2_i32 as usize;
+
+                        let two_sz2 = cur_two_sz + two_sz_site;
+                        if two_sz2 < min_two_sz_total || two_sz2 > max_two_sz_total {
+                            continue;
+                        }
+                        let idx2 = (two_sz2 + two_sz_offset) as usize;
+
+                        let add = match cur.checked_mul(mult) {
+                            Some(v) => v,
+                            None => bail!("i128 overflow"),
+                        };
+                        next[n2][idx2] = match next[n2][idx2].checked_add(add) {
+                            Some(v) => v,
+                            None => bail!("i128 overflow"),
+                        };
+                    }
+                }
+            }
+
+            dp = next;
+        }
+
+        Ok(dp[total_num_electrons as usize][(total_two_sz + two_sz_offset) as usize])
+    }
 }
 
 #[cfg(test)]
@@ -254,5 +359,67 @@ mod tests {
             HashMap::new(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn two_sites_s_half_n2_nontrivial_exact_counts() {
+        let m = KondoLatticeModel {
+            num_sites: 2,
+            two_s_list: vec![1, 1],
+            hopping: HashMap::new(),
+            u_list: vec![0.0, 0.0],
+            mu_list: vec![0.0, 0.0],
+            hz_c_list: vec![0.0, 0.0],
+            hz_f_list: vec![0.0, 0.0],
+            d_list: vec![0.0, 0.0],
+            density_density: HashMap::new(),
+            kondo_xy_list: vec![0.0, 0.0],
+            kondo_z_list: vec![0.0, 0.0],
+            ff_exchange_xy: HashMap::new(),
+            ff_exchange_z: HashMap::new(),
+        };
+
+        assert_eq!(m.calc_dim_u1_sector(2, -2.0).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(2, -1.0).unwrap(), 6);
+        assert_eq!(m.calc_dim_u1_sector(2, 0.0).unwrap(), 10);
+        assert_eq!(m.calc_dim_u1_sector(2, 1.0).unwrap(), 6);
+        assert_eq!(m.calc_dim_u1_sector(2, 2.0).unwrap(), 1);
+    }
+
+    #[test]
+    fn one_site_s_one_exact_counts() {
+        // 1 site, S = 1 (two_s = 2)
+        let m = KondoLatticeModel {
+            num_sites: 1,
+            two_s_list: vec![2],
+            hopping: HashMap::new(),
+            u_list: vec![0.0],
+            mu_list: vec![0.0],
+            hz_c_list: vec![0.0],
+            hz_f_list: vec![0.0],
+            d_list: vec![0.0],
+            density_density: HashMap::new(),
+            kondo_xy_list: vec![0.0],
+            kondo_z_list: vec![0.0],
+            ff_exchange_xy: HashMap::new(),
+            ff_exchange_z: HashMap::new(),
+        };
+
+        // n = 0 : localized Sz = -1,0,1
+        assert_eq!(m.calc_dim_u1_sector(0, -1.0).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(0, 0.0).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(0, 1.0).unwrap(), 1);
+
+        // n = 1
+        // Sz = {-3/2,-1/2,1/2,3/2} with multiplicities {1,2,2,1}
+        assert_eq!(m.calc_dim_u1_sector(1, -1.5).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(1, -0.5).unwrap(), 2);
+        assert_eq!(m.calc_dim_u1_sector(1, 0.5).unwrap(), 2);
+        assert_eq!(m.calc_dim_u1_sector(1, 1.5).unwrap(), 1);
+
+        // n = 2 : same pattern as n=0
+        assert_eq!(m.calc_dim_u1_sector(2, -1.0).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(2, 0.0).unwrap(), 1);
+        assert_eq!(m.calc_dim_u1_sector(2, 1.0).unwrap(), 1);
     }
 }
