@@ -543,7 +543,7 @@ impl KondoLatticeModel {
             if k_col < dim_spin {
                 let col = k_col * 4 + e; // input state with higher k (lower m)
                 let m_col = s - (k_col as f64); // m of input state
-                // coefficient: sqrt(S(S+1) - m(m+1))
+                                                // coefficient: sqrt(S(S+1) - m(m+1))
                 let coeff = (s * (s + 1.0) - m_col * (m_col + 1.0)).sqrt();
                 cols.push(col);
                 vals.push(coeff);

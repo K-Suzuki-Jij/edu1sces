@@ -34,5 +34,9 @@ fn core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::solver::solve_hubbard::solve_hubbard,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::solver::solve_kondo_lattice::solve_kondo_lattice,
+        m
+    )?)?;
     Ok(())
 }
