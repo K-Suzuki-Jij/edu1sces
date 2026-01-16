@@ -1,8 +1,11 @@
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
+use crate::basis::Basis;
 use crate::blas::{csr_add, csr_mul, csr_transpose, CsrMatrix};
+use crate::model::quantum_model::QuantumModel;
 
 /// Kondo lattice model with
 /// - U(1) particle-number conservation
@@ -535,7 +538,7 @@ impl KondoLatticeModel {
             // S^+ raises m by 1, which means k decreases by 1
             if k > 0 {
                 let m = s - (k as f64); // current m
-                // coefficient: sqrt(S(S+1) - m(m+1))
+                                        // coefficient: sqrt(S(S+1) - m(m+1))
                 let coeff = (s * (s + 1.0) - m * (m + 1.0)).sqrt();
                 let col = (k - 1) * 4 + e; // target: k-1 block, same electron state
                 cols.push(col);
@@ -575,6 +578,274 @@ impl KondoLatticeModel {
         let sp = self.make_local_op_l_sp(site)?;
         let sm = self.make_local_op_l_sm(site)?;
         csr_add(0.5, &sp, -0.5, &sm)
+    }
+}
+
+impl QuantumModel for KondoLatticeModel {
+    fn num_sites(&self) -> usize {
+        self.num_sites
+    }
+
+    fn local_dim(&self, site: usize) -> usize {
+        // (2S + 1) * 4, where 4 = {|vac>, |up>, |down>, |updown>}
+        let two_s = self.two_s_list[site];
+        ((two_s as usize) + 1) * 4
+    }
+
+    /// Return quantum numbers [n, 2*total_sz] for a local state.
+    /// Local state index = k * 4 + e, where:
+    ///   k = 0, 1, ..., 2S (spin block index, m = S - k)
+    ///   e = 0, 1, 2, 3 (electron state: vac, up, down, updown)
+    fn quantum_numbers(&self, site: usize, local_state: usize) -> Vec<i32> {
+        let two_s = self.two_s_list[site];
+        let dim_spin = (two_s as usize) + 1;
+
+        let k = local_state / 4;
+        let e = local_state % 4;
+
+        if k >= dim_spin {
+            panic!(
+                "invalid local_state: {} (site {} has dim {})",
+                local_state,
+                site,
+                dim_spin * 4
+            );
+        }
+
+        // Localized spin contribution: two_m = 2S - 2k
+        let two_m_loc = two_s - 2 * (k as i32);
+
+        // Electron contribution: (n, 2*sz)
+        let (n_e, two_sz_e) = match e {
+            0 => (0, 0),  // |vac>
+            1 => (1, 1),  // |up>
+            2 => (1, -1), // |down>
+            3 => (2, 0),  // |updown>
+            _ => unreachable!(),
+        };
+
+        // Total: [n, 2*(sz_loc + sz_e)]
+        vec![n_e, two_m_loc + two_sz_e]
+    }
+
+    /// Build basis for sector with quantum numbers:
+    ///   target_quantum_numbers[0] = num_electrons
+    ///   target_quantum_numbers[1] = 2*total_sz
+    fn build_basis(&self, target_quantum_numbers: &[i32]) -> Result<Basis> {
+        let num_electrons = target_quantum_numbers[0] as usize;
+        let total_sz2 = target_quantum_numbers[1];
+
+        let num_sites = self.num_sites;
+        if num_sites == 0 {
+            bail!("num_sites must be non-zero");
+        }
+        if target_quantum_numbers.len() < 2 {
+            bail!("target_quantum_numbers must have length >= 2");
+        }
+        if target_quantum_numbers[0] < 0 {
+            bail!(
+                "num_electrons must be non-negative (got {})",
+                target_quantum_numbers[0]
+            );
+        }
+        if num_electrons > 2 * num_sites {
+            bail!(
+                "num_electrons out of range: {} (valid: 0..={})",
+                num_electrons,
+                2 * num_sites
+            );
+        }
+
+        // Parity condition:
+        // total_sz2 = sum(two_s) + (n_up - n_down), and (n_up - n_down) ≡ num_electrons (mod 2)
+        let sum_two_s: i32 = self.two_s_list.iter().sum();
+        if (((sum_two_s + (num_electrons as i32)) - total_sz2) & 1) != 0 {
+            bail!(
+                "parity mismatch: sum(2S)+N = {} but 2*total_sz = {}",
+                sum_two_s + (num_electrons as i32),
+                total_sz2
+            );
+        }
+
+        // Coarse range check for total_sz2 (tighter than +/-1 per site using fixed N):
+        // electron contribution to 2*sz is in [-min(N,L), +min(N,L)]
+        let e_max = (num_electrons.min(num_sites)) as i32;
+        let min_two_m: i32 = self.two_s_list.iter().map(|&s| -s).sum::<i32>() - e_max;
+        let max_two_m: i32 = self.two_s_list.iter().map(|&s| s).sum::<i32>() + e_max;
+        if total_sz2 < min_two_m || total_sz2 > max_two_m {
+            bail!(
+                "2*total_sz = {} out of range [{}, {}]",
+                total_sz2,
+                min_two_m,
+                max_two_m
+            );
+        }
+
+        // Build site_base and local_dims (local dim = 4*(2S+1))
+        let mut site_base = Vec::with_capacity(num_sites);
+        let mut local_dims = Vec::with_capacity(num_sites);
+        let mut site_stride: i128 = 1;
+        for &two_s in self.two_s_list.iter() {
+            if two_s < 0 {
+                bail!("two_s_list contains negative value: {}", two_s);
+            }
+            site_base.push(site_stride);
+            let local_dim = 4usize
+                .checked_mul((two_s as usize) + 1)
+                .ok_or_else(|| anyhow::anyhow!("usize overflow"))?;
+            local_dims.push(local_dim);
+            site_stride = site_stride
+                .checked_mul(local_dim as i128)
+                .ok_or_else(|| anyhow::anyhow!("i128 overflow"))?;
+        }
+
+        // Suffix bounds for pruning:
+        // per site:
+        //   electrons in [0,2]
+        //   two_sz in [-(two_s+1), +(two_s+1)]  (localized in [-two_s,+two_s] plus electron in [-1,+1])
+        let mut suffix_min_n = vec![0i32; num_sites + 1];
+        let mut suffix_max_n = vec![0i32; num_sites + 1];
+        let mut suffix_min_sz2 = vec![0i32; num_sites + 1];
+        let mut suffix_max_sz2 = vec![0i32; num_sites + 1];
+        for i in (0..num_sites).rev() {
+            suffix_min_n[i] = suffix_min_n[i + 1];
+            suffix_max_n[i] = suffix_max_n[i + 1] + 2;
+
+            let two_s = self.two_s_list[i];
+            suffix_min_sz2[i] = suffix_min_sz2[i + 1] - (two_s + 1);
+            suffix_max_sz2[i] = suffix_max_sz2[i + 1] + (two_s + 1);
+        }
+
+        // Reserve basis capacity if possible (optional fast path).
+        // Using the same DP-style method you already have (if present).
+        let mut basis = Vec::new();
+        if let Ok(dim) = self.calc_dim_u1_sector(num_electrons as i32, (total_sz2 as f64) / 2.0) {
+            if dim > 0 && dim <= (usize::MAX as i128) {
+                basis = Vec::with_capacity(dim as usize);
+            }
+        }
+
+        // Electron local states in fixed order:
+        // e=0 vac  -> (dn=0, e_sz2=0)
+        // e=1 up   -> (dn=1, e_sz2=+1)
+        // e=2 down -> (dn=1, e_sz2=-1)
+        // e=3 updn -> (dn=2, e_sz2=0)
+        const DN: [i32; 4] = [0, 1, 1, 2];
+        const ESZ2: [i32; 4] = [0, 1, -1, 0];
+
+        fn dfs(
+            site: usize,
+            two_s_list: &[i32],
+            site_base: &[i128],
+            suffix_min_n: &[i32],
+            suffix_max_n: &[i32],
+            suffix_min_sz2: &[i32],
+            suffix_max_sz2: &[i32],
+            n_target: i32,
+            sz2_target: i32,
+            n_sum: i32,
+            sz2_sum: i32,
+            basis_code: i128,
+            out: &mut Vec<i128>,
+        ) {
+            if site == two_s_list.len() {
+                if n_sum == n_target && sz2_sum == sz2_target {
+                    out.push(basis_code);
+                }
+                return;
+            }
+
+            let remain_min_n = suffix_min_n[site + 1];
+            let remain_max_n = suffix_max_n[site + 1];
+            let remain_min_sz2 = suffix_min_sz2[site + 1];
+            let remain_max_sz2 = suffix_max_sz2[site + 1];
+
+            // quick prune by remaining possible ranges
+            let need_n = n_target - n_sum;
+            if need_n < 0 + remain_min_n || need_n > 2 + remain_max_n {
+                return;
+            }
+
+            let two_s = two_s_list[site];
+            let need_sz2 = sz2_target - sz2_sum;
+            if need_sz2 < (-(two_s + 1)) + remain_min_sz2 || need_sz2 > (two_s + 1) + remain_max_sz2
+            {
+                return;
+            }
+
+            let base = site_base[site];
+
+            // local basis digit = 4*k + e, where k=0..2S (m=S-k), e=0..3 (vac,up,down,updn)
+            let dim_spin = (two_s as usize) + 1;
+            let mut k = 0usize;
+            while k < dim_spin {
+                let two_m = two_s - 2 * (k as i32); // 2m
+                let block = (4 * k) as i128;
+
+                let mut e = 0usize;
+                while e < 4 {
+                    let dn = DN[e];
+                    let sz2_site = two_m + ESZ2[e];
+
+                    // extra prune (tight, cheap)
+                    let n2 = n_sum + dn;
+                    if n2 <= n_target {
+                        let sz2_2 = sz2_sum + sz2_site;
+
+                        let need_n2 = n_target - n2;
+                        if need_n2 >= remain_min_n && need_n2 <= remain_max_n {
+                            let need_sz2_2 = sz2_target - sz2_2;
+                            if need_sz2_2 >= remain_min_sz2 && need_sz2_2 <= remain_max_sz2 {
+                                let digit = block + (e as i128);
+                                dfs(
+                                    site + 1,
+                                    two_s_list,
+                                    site_base,
+                                    suffix_min_n,
+                                    suffix_max_n,
+                                    suffix_min_sz2,
+                                    suffix_max_sz2,
+                                    n_target,
+                                    sz2_target,
+                                    n2,
+                                    sz2_2,
+                                    basis_code + digit * base,
+                                    out,
+                                );
+                            }
+                        }
+                    }
+
+                    e += 1;
+                }
+                k += 1;
+            }
+        }
+
+        dfs(
+            0,
+            &self.two_s_list,
+            &site_base,
+            &suffix_min_n,
+            &suffix_max_n,
+            &suffix_min_sz2,
+            &suffix_max_sz2,
+            num_electrons as i32,
+            total_sz2,
+            0,
+            0,
+            0i128,
+            &mut basis,
+        );
+
+        basis.sort_unstable();
+
+        let mut inverse_basis = AHashMap::with_capacity(basis.len());
+        for (i, &basis_code) in basis.iter().enumerate() {
+            inverse_basis.insert(basis_code, i);
+        }
+
+        Ok(Basis::new(basis, inverse_basis, site_base, local_dims))
     }
 }
 
@@ -880,5 +1151,184 @@ mod tests {
         for &v in &l_sp.vals {
             assert!((v - sqrt2).abs() < 1e-12);
         }
+    }
+
+    // =========================================================================
+    // build_basis tests
+    // =========================================================================
+
+    #[test]
+    fn build_basis_one_site_s_half() {
+        // 1 site, S = 1/2
+        // Local states (index = 4*k + e):
+        //   0: |+1/2>|vac>   -> [n=0, 2*Sz=1]
+        //   1: |+1/2>|up>    -> [n=1, 2*Sz=2]
+        //   2: |+1/2>|down>  -> [n=1, 2*Sz=0]
+        //   3: |+1/2>|updown>-> [n=2, 2*Sz=1]
+        //   4: |-1/2>|vac>   -> [n=0, 2*Sz=-1]
+        //   5: |-1/2>|up>    -> [n=1, 2*Sz=0]
+        //   6: |-1/2>|down>  -> [n=1, 2*Sz=-2]
+        //   7: |-1/2>|updown>-> [n=2, 2*Sz=-1]
+        let m = make_model_s_half();
+
+        // (N=0, Sz=0.5): state 0 only
+        let b = m.build_basis(&[0, 1]).unwrap();
+        assert_eq!(b.basis, vec![0]);
+
+        // (N=0, Sz=-0.5): state 4 only
+        let b = m.build_basis(&[0, -1]).unwrap();
+        assert_eq!(b.basis, vec![4]);
+
+        // (N=1, Sz=1.0): state 1 only
+        let b = m.build_basis(&[1, 2]).unwrap();
+        assert_eq!(b.basis, vec![1]);
+
+        // (N=1, Sz=0.0): states 2 and 5
+        let b = m.build_basis(&[1, 0]).unwrap();
+        assert_eq!(b.basis, vec![2, 5]);
+
+        // (N=1, Sz=-1.0): state 6 only
+        let b = m.build_basis(&[1, -2]).unwrap();
+        assert_eq!(b.basis, vec![6]);
+
+        // (N=2, Sz=0.5): state 3 only
+        let b = m.build_basis(&[2, 1]).unwrap();
+        assert_eq!(b.basis, vec![3]);
+
+        // (N=2, Sz=-0.5): state 7 only
+        let b = m.build_basis(&[2, -1]).unwrap();
+        assert_eq!(b.basis, vec![7]);
+    }
+
+    #[test]
+    fn build_basis_one_site_s_one() {
+        // 1 site, S = 1
+        // Local states (index = 4*k + e):
+        //   k=0 (m=+1):  0-3
+        //   k=1 (m=0):   4-7
+        //   k=2 (m=-1):  8-11
+        //
+        //   0: |+1>|vac>   -> [n=0, 2*Sz=2]
+        //   1: |+1>|up>    -> [n=1, 2*Sz=3]
+        //   2: |+1>|down>  -> [n=1, 2*Sz=1]
+        //   3: |+1>|updown>-> [n=2, 2*Sz=2]
+        //   4: |0>|vac>    -> [n=0, 2*Sz=0]
+        //   5: |0>|up>     -> [n=1, 2*Sz=1]
+        //   6: |0>|down>   -> [n=1, 2*Sz=-1]
+        //   7: |0>|updown> -> [n=2, 2*Sz=0]
+        //   8: |-1>|vac>   -> [n=0, 2*Sz=-2]
+        //   9: |-1>|up>    -> [n=1, 2*Sz=-1]
+        //  10: |-1>|down>  -> [n=1, 2*Sz=-3]
+        //  11: |-1>|updown>-> [n=2, 2*Sz=-2]
+        let m = make_model_s_one();
+
+        // (N=0, Sz=1.0): state 0 only
+        let b = m.build_basis(&[0, 2]).unwrap();
+        assert_eq!(b.basis, vec![0]);
+
+        // (N=0, Sz=0.0): state 4 only
+        let b = m.build_basis(&[0, 0]).unwrap();
+        assert_eq!(b.basis, vec![4]);
+
+        // (N=0, Sz=-1.0): state 8 only
+        let b = m.build_basis(&[0, -2]).unwrap();
+        assert_eq!(b.basis, vec![8]);
+
+        // (N=1, Sz=1.5): state 1 only
+        let b = m.build_basis(&[1, 3]).unwrap();
+        assert_eq!(b.basis, vec![1]);
+
+        // (N=1, Sz=0.5): states 2 and 5
+        let b = m.build_basis(&[1, 1]).unwrap();
+        assert_eq!(b.basis, vec![2, 5]);
+
+        // (N=1, Sz=-0.5): states 6 and 9
+        let b = m.build_basis(&[1, -1]).unwrap();
+        assert_eq!(b.basis, vec![6, 9]);
+
+        // (N=1, Sz=-1.5): state 10 only
+        let b = m.build_basis(&[1, -3]).unwrap();
+        assert_eq!(b.basis, vec![10]);
+
+        // (N=2, Sz=1.0): state 3 only
+        let b = m.build_basis(&[2, 2]).unwrap();
+        assert_eq!(b.basis, vec![3]);
+
+        // (N=2, Sz=0.0): state 7 only
+        let b = m.build_basis(&[2, 0]).unwrap();
+        assert_eq!(b.basis, vec![7]);
+
+        // (N=2, Sz=-1.0): state 11 only
+        let b = m.build_basis(&[2, -2]).unwrap();
+        assert_eq!(b.basis, vec![11]);
+    }
+
+    #[test]
+    fn build_basis_two_sites_s_half() {
+        // 2 sites, S = 1/2 each
+        // site_base[0] = 1, site_base[1] = 8
+        // basis_code = local_state[0] + 8 * local_state[1]
+        //
+        // For (N=1, Sz=0): total n=1, total 2*Sz=0
+        // Possible combinations:
+        //   site0: n=0, 2*sz_tot=a  =>  site1: n=1, 2*sz_tot=-a
+        //   site0: n=1, 2*sz_tot=a  =>  site1: n=0, 2*sz_tot=-a
+        //
+        // site0 n=0, 2*sz=1 (state 0): site1 n=1, 2*sz=-1 => no such state (need 2*sz_loc=-1 from electron impossible with n=1)
+        // Actually let's enumerate carefully:
+        //
+        // Local states for S=1/2:
+        //   0: |+1/2>|vac>   -> n=0, 2*sz=1
+        //   1: |+1/2>|up>    -> n=1, 2*sz=2
+        //   2: |+1/2>|down>  -> n=1, 2*sz=0
+        //   3: |+1/2>|updown>-> n=2, 2*sz=1
+        //   4: |-1/2>|vac>   -> n=0, 2*sz=-1
+        //   5: |-1/2>|up>    -> n=1, 2*sz=0
+        //   6: |-1/2>|down>  -> n=1, 2*sz=-2
+        //   7: |-1/2>|updown>-> n=2, 2*sz=-1
+        //
+        // (N=1, Sz=0): n_tot=1, 2*sz_tot=0
+        // Combinations:
+        //   site0=0 (n=0, 2*sz=1): need site1 n=1, 2*sz=-1 => no match
+        //   site0=4 (n=0, 2*sz=-1): need site1 n=1, 2*sz=1 => no match
+        //   site0=2 (n=1, 2*sz=0): need site1 n=0, 2*sz=0 => no match
+        //   site0=5 (n=1, 2*sz=0): need site1 n=0, 2*sz=0 => no match
+        //
+        // Hmm, for 2*sz=0 at site1 with n=0, we need localized spin m=0, but S=1/2 only has m=+1/2,-1/2.
+        // So (N=1, Sz=0) sector should be empty for 2-site S=1/2.
+        //
+        // Let's try (N=2, Sz=0): n_tot=2, 2*sz_tot=0
+        //   site0=0 (n=0, 2*sz=1): need site1 n=2, 2*sz=-1 => state 7 => code = 0 + 8*7 = 56
+        //   site0=4 (n=0, 2*sz=-1): need site1 n=2, 2*sz=1 => state 3 => code = 4 + 8*3 = 28
+        //   site0=2 (n=1, 2*sz=0): need site1 n=1, 2*sz=0 => states 2,5
+        //       code = 2 + 8*2 = 18
+        //       code = 2 + 8*5 = 42
+        //   site0=5 (n=1, 2*sz=0): need site1 n=1, 2*sz=0 => states 2,5
+        //       code = 5 + 8*2 = 21
+        //       code = 5 + 8*5 = 45
+        //   site0=3 (n=2, 2*sz=1): need site1 n=0, 2*sz=-1 => state 4 => code = 3 + 8*4 = 35
+        //   site0=7 (n=2, 2*sz=-1): need site1 n=0, 2*sz=1 => state 0 => code = 7 + 8*0 = 7
+        //   site0=1 (n=1, 2*sz=2): need site1 n=1, 2*sz=-2 => state 6 => code = 1 + 8*6 = 49
+        //   site0=6 (n=1, 2*sz=-2): need site1 n=1, 2*sz=2 => state 1 => code = 6 + 8*1 = 14
+        //
+        // Sorted: [7, 14, 18, 21, 28, 35, 42, 45, 49, 56]
+        let m = KondoLatticeModel {
+            num_sites: 2,
+            two_s_list: vec![1, 1],
+            hopping: HashMap::new(),
+            u_list: vec![0.0, 0.0],
+            mu_list: vec![0.0, 0.0],
+            hz_c_list: vec![0.0, 0.0],
+            hz_f_list: vec![0.0, 0.0],
+            d_list: vec![0.0, 0.0],
+            density_density: HashMap::new(),
+            kondo_xy_list: vec![0.0, 0.0],
+            kondo_z_list: vec![0.0, 0.0],
+            ff_exchange_xy: HashMap::new(),
+            ff_exchange_z: HashMap::new(),
+        };
+
+        let b = m.build_basis(&[2, 0]).unwrap();
+        assert_eq!(b.basis, vec![7, 14, 18, 21, 28, 35, 42, 45, 49, 56]);
     }
 }
