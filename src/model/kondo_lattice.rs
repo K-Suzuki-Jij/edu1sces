@@ -511,6 +511,7 @@ impl KondoLatticeModel {
     /// Localized spin S+ operator
     /// S^+ |m>|e> = sqrt(S(S+1) - m(m+1)) |m+1>|e>
     /// In our basis: k -> k-1 (since m = S - k, so m+1 corresponds to k-1)
+    /// Matrix element H[row, col] = <row| S^+ |col>
     #[pyo3(text_signature = "(self, site)")]
     pub fn make_local_op_l_sp(&self, site: usize) -> Result<CsrMatrix> {
         if site >= self.num_sites {
@@ -532,15 +533,18 @@ impl KondoLatticeModel {
         let mut vals = Vec::new();
 
         for row in 0..dim {
-            let k = row / 4;
+            let k_row = row / 4;
             let e = row % 4;
 
             // S^+ raises m by 1, which means k decreases by 1
-            if k > 0 {
-                let m = s - (k as f64); // current m
-                                        // coefficient: sqrt(S(S+1) - m(m+1))
-                let coeff = (s * (s + 1.0) - m * (m + 1.0)).sqrt();
-                let col = (k - 1) * 4 + e; // target: k-1 block, same electron state
+            // <row| S^+ |col> is nonzero when row has k-1 and col has k
+            // So col = row + 4 (k_col = k_row + 1)
+            let k_col = k_row + 1;
+            if k_col < dim_spin {
+                let col = k_col * 4 + e; // input state with higher k (lower m)
+                let m_col = s - (k_col as f64); // m of input state
+                // coefficient: sqrt(S(S+1) - m(m+1))
+                let coeff = (s * (s + 1.0) - m_col * (m_col + 1.0)).sqrt();
                 cols.push(col);
                 vals.push(coeff);
             }
@@ -578,6 +582,104 @@ impl KondoLatticeModel {
         let sp = self.make_local_op_l_sp(site)?;
         let sm = self.make_local_op_l_sm(site)?;
         csr_add(0.5, &sp, -0.5, &sm)
+    }
+
+    // =========================================================================
+    // Local Hamiltonian
+    // =========================================================================
+
+    /// Local Hamiltonian at site i:
+    ///   H_i = U_i n_up n_down
+    ///       - mu_i n
+    ///       + hz_c_i (n_up - n_down)
+    ///       + hz_f_i Sz_loc
+    ///       + d_i (Sz_loc)^2
+    ///       + Kz_i Sz_loc * sz_cond
+    ///       + (1/2) K_xy_i (S^+ s^- + S^- s^+)
+    #[pyo3(text_signature = "(self, site)")]
+    pub fn make_local_hamiltonian(&self, site: usize) -> Result<CsrMatrix> {
+        if site >= self.num_sites {
+            bail!(
+                "site {} out of range (num_sites = {})",
+                site,
+                self.num_sites
+            );
+        }
+
+        let two_s = self.two_s_list[site];
+        let dim_spin = (two_s as usize) + 1;
+        let dim = dim_spin * 4;
+
+        // Build operators
+        let n_up = self.make_local_op_n_up(site)?;
+        let n_down = self.make_local_op_n_down(site)?;
+        let l_sz = self.make_local_op_l_sz(site)?;
+        let c_sz = self.make_local_op_c_sz(site)?;
+        let l_sp = self.make_local_op_l_sp(site)?;
+        let l_sm = self.make_local_op_l_sm(site)?;
+        let c_sp = self.make_local_op_c_sp(site)?;
+        let c_sm = self.make_local_op_c_sm(site)?;
+
+        // Start with zero matrix
+        let mut h = CsrMatrix {
+            row_dim: dim,
+            col_dim: dim,
+            rows: vec![0; dim + 1],
+            cols: Vec::new(),
+            vals: Vec::new(),
+        };
+
+        // U n_up n_down
+        let u = self.u_list[site];
+        if u.abs() > 1e-15 {
+            let n_up_n_down = csr_mul(1.0, &n_up, 1.0, &n_down)?;
+            h = csr_add(1.0, &h, u, &n_up_n_down)?;
+        }
+
+        // -mu n = -mu (n_up + n_down)
+        let mu = self.mu_list[site];
+        if mu.abs() > 1e-15 {
+            h = csr_add(1.0, &h, -mu, &n_up)?;
+            h = csr_add(1.0, &h, -mu, &n_down)?;
+        }
+
+        // hz_c (n_up - n_down)
+        let hz_c = self.hz_c_list[site];
+        if hz_c.abs() > 1e-15 {
+            h = csr_add(1.0, &h, hz_c, &n_up)?;
+            h = csr_add(1.0, &h, -hz_c, &n_down)?;
+        }
+
+        // hz_f Sz_loc
+        let hz_f = self.hz_f_list[site];
+        if hz_f.abs() > 1e-15 {
+            h = csr_add(1.0, &h, hz_f, &l_sz)?;
+        }
+
+        // d (Sz_loc)^2
+        let d = self.d_list[site];
+        if d.abs() > 1e-15 {
+            let l_sz_sq = csr_mul(1.0, &l_sz, 1.0, &l_sz)?;
+            h = csr_add(1.0, &h, d, &l_sz_sq)?;
+        }
+
+        // Kz Sz_loc * sz_cond
+        let kz = self.kondo_z_list[site];
+        if kz.abs() > 1e-15 {
+            let l_sz_c_sz = csr_mul(1.0, &l_sz, 1.0, &c_sz)?;
+            h = csr_add(1.0, &h, kz, &l_sz_c_sz)?;
+        }
+
+        // (1/2) K_xy (S^+ s^- + S^- s^+)
+        let kxy = self.kondo_xy_list[site];
+        if kxy.abs() > 1e-15 {
+            let sp_sm = csr_mul(1.0, &l_sp, 1.0, &c_sm)?;
+            let sm_sp = csr_mul(1.0, &l_sm, 1.0, &c_sp)?;
+            h = csr_add(1.0, &h, 0.5 * kxy, &sp_sm)?;
+            h = csr_add(1.0, &h, 0.5 * kxy, &sm_sp)?;
+        }
+
+        Ok(h)
     }
 }
 
@@ -1117,25 +1219,33 @@ mod tests {
         // S = 1/2: S^+ |m=-1/2> = sqrt(1/2 * 3/2 - (-1/2)(1/2)) |m=+1/2>
         //                      = sqrt(3/4 + 1/4) = 1
         // S^+ raises m by 1, i.e., k decreases by 1 (k=1 -> k=0)
-        // So rows 4-7 (k=1) -> cols 0-3 (k=0)
+        // Matrix element <row|S^+|col> is nonzero when:
+        //   col is in k=1 block (states 4-7), row is in k=0 block (states 0-3)
+        // CSR: rows 0-3 have entries pointing to cols 4-7
         let m = make_model_s_half();
         let l_sp = m.make_local_op_l_sp(0).unwrap();
 
         assert_eq!(l_sp.row_dim, 8);
         assert_eq!(l_sp.col_dim, 8);
-        // rows 0-3: k=0, cannot raise
-        // rows 4-7: k=1, raise to k=0
-        assert_eq!(l_sp.rows, vec![0, 0, 0, 0, 0, 1, 2, 3, 4]);
-        assert_eq!(l_sp.cols, vec![0, 1, 2, 3]);
+        // row 0: <0|S^+|4> = 1, row 1: <1|S^+|5> = 1, etc.
+        assert_eq!(l_sp.rows, vec![0, 1, 2, 3, 4, 4, 4, 4, 4]);
+        assert_eq!(l_sp.cols, vec![4, 5, 6, 7]);
         assert_eq!(l_sp.vals, vec![1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn local_op_l_sp_s_one() {
         // S = 1:
-        // k=0: m=+1, cannot raise further
-        // k=1: m=0, S^+ |0> = sqrt(1*2 - 0*1) |+1> = sqrt(2)
-        // k=2: m=-1, S^+ |-1> = sqrt(1*2 - (-1)*0) |0> = sqrt(2)
+        // k=0: m=+1, can be reached from k=1 (m=0)
+        // k=1: m=0, can be reached from k=2 (m=-1)
+        // k=2: m=-1, cannot be reached by S^+ (would need m=-2)
+        //
+        // S^+ |m=0> = sqrt(1*2 - 0*1) |m=+1> = sqrt(2)
+        // S^+ |m=-1> = sqrt(1*2 - (-1)*0) |m=0> = sqrt(2)
+        //
+        // Matrix element <row|S^+|col>:
+        //   rows 0-3 (k=0): <k=0|S^+|k=1> = sqrt(2) -> cols 4-7
+        //   rows 4-7 (k=1): <k=1|S^+|k=2> = sqrt(2) -> cols 8-11
         let m = make_model_s_one();
         let l_sp = m.make_local_op_l_sp(0).unwrap();
 
@@ -1143,11 +1253,11 @@ mod tests {
 
         assert_eq!(l_sp.row_dim, 12);
         assert_eq!(l_sp.col_dim, 12);
-        // rows 0-3: k=0, no contribution
-        // rows 4-7: k=1 -> k=0, coeff=sqrt(2)
-        // rows 8-11: k=2 -> k=1, coeff=sqrt(2)
-        assert_eq!(l_sp.rows, vec![0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(l_sp.cols, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        // rows 0-3: entry at cols 4-7
+        // rows 4-7: entry at cols 8-11
+        // rows 8-11: no entries
+        assert_eq!(l_sp.rows, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8]);
+        assert_eq!(l_sp.cols, vec![4, 5, 6, 7, 8, 9, 10, 11]);
         for &v in &l_sp.vals {
             assert!((v - sqrt2).abs() < 1e-12);
         }
@@ -1330,5 +1440,75 @@ mod tests {
 
         let b = m.build_basis(&[2, 0]).unwrap();
         assert_eq!(b.basis, vec![7, 14, 18, 21, 28, 35, 42, 45, 49, 56]);
+    }
+
+    // =========================================================================
+    // make_local_hamiltonian tests
+    // =========================================================================
+
+    #[test]
+    fn local_hamiltonian_kondo_xy_s_half() {
+        // S = 1/2, Kxy = 2
+        // Local Hamiltonian should have off-diagonal Kondo xy term
+        // (1/2) Kxy (S^+ s^- + S^- s^+)
+        //
+        // Let's first understand what S^+ s^- and S^- s^+ do:
+        //
+        // S^+ (localized): raises m by 1 (k decreases by 1)
+        //   S^+ |m=-1/2> = |m=+1/2>  (coefficient = 1 for S=1/2)
+        //   S^+ |m=+1/2> = 0
+        //
+        // s^- (conduction): lowers conduction spin
+        //   s^- |up> = |down>, s^- |down> = 0
+        //   s^- = c_down^dag c_up
+        //
+        // S^+ s^-: Raises localized spin AND lowers conduction spin
+        //   |m=-1/2>|up> -> |m=+1/2>|down>  i.e., state 5 -> state 2
+        //   <2| S^+ s^- |5> = 1
+        //
+        // S^- s^+: Lowers localized spin AND raises conduction spin
+        //   |m=+1/2>|down> -> |m=-1/2>|up>  i.e., state 2 -> state 5
+        //   <5| S^- s^+ |2> = 1
+        //
+        // So H[2,5] = (1/2)*Kxy*1 = 1 and H[5,2] = (1/2)*Kxy*1 = 1
+        let m = KondoLatticeModel {
+            num_sites: 1,
+            two_s_list: vec![1],
+            hopping: HashMap::new(),
+            u_list: vec![0.0],
+            mu_list: vec![0.0],
+            hz_c_list: vec![0.0],
+            hz_f_list: vec![0.0],
+            d_list: vec![0.0],
+            density_density: HashMap::new(),
+            kondo_xy_list: vec![2.0],
+            kondo_z_list: vec![0.0],
+            ff_exchange_xy: HashMap::new(),
+            ff_exchange_z: HashMap::new(),
+        };
+
+        let h = m.make_local_hamiltonian(0).unwrap();
+
+        // Should have off-diagonal elements at (2, 5) and (5, 2)
+        let mut found_2_5 = false;
+        let mut found_5_2 = false;
+        let tol = 1e-12;
+
+        for row in 0..h.row_dim {
+            for k in h.rows[row]..h.rows[row + 1] {
+                let col = h.cols[k];
+                let val = h.vals[k];
+                if row == 2 && col == 5 {
+                    assert!((val - 1.0).abs() < tol);
+                    found_2_5 = true;
+                }
+                if row == 5 && col == 2 {
+                    assert!((val - 1.0).abs() < tol);
+                    found_5_2 = true;
+                }
+            }
+        }
+
+        assert!(found_2_5 && found_5_2);
     }
 }
