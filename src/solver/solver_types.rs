@@ -92,13 +92,8 @@ impl SolverResult {
         let pool = build_pool(num_threads)?;
 
         // Compute M|psi>
-        let m_psi = self.apply_local_op_to_eigenvector(
-            local_op,
-            site,
-            &current_qn,
-            &current_qn,
-            &pool,
-        )?;
+        let m_psi =
+            self.apply_local_op_to_eigenvector(local_op, site, &current_qn, &current_qn, &pool)?;
 
         // Compute <psi|M|psi>
         dot(&pool, &self.eigenvector, &m_psi)
