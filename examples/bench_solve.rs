@@ -80,13 +80,13 @@ fn main() {
     let thread_counts = [1, 2, 3, 4, 5, 6, 7, 8];
 
     // Heisenberg parameters
-    let heisenberg_n = 22;
+    let heisenberg_n = 26;
     let heisenberg_two_s = 1; // S = 1/2
     let heisenberg_total_sz = 0.0;
     let heisenberg_jxy = 1.0;
     let heisenberg_jz = 1.0;
-    let heisenberg_hz = 0.3;
-    let heisenberg_d = 0.2;
+    let heisenberg_hz = 0.0;
+    let heisenberg_d = 0.0;
 
     // Hubbard parameters
     let hubbard_n = 12;
