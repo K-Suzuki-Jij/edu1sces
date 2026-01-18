@@ -1,6 +1,6 @@
 //! SU(2) symmetric Heisenberg Hamiltonian construction using 6j symbols.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{bail, Result};
 use rayon::prelude::*;
 use std::hash::{Hash, Hasher};
@@ -11,9 +11,171 @@ use crate::utility::cg_coupling::eigenvalue_si_sj;
 use crate::utility::rayon_pool::with_pool;
 use crate::utility::wigner::WignerSymbols;
 
-/// Compute the transformation coefficient from left-coupled to (S_i ⊗ S_j)_K coupled basis.
-fn compute_transformation_coeff_6j(
-    wigner: &mut WignerSymbols,
+/// Type alias for 6j symbol key: (j1, j2, j3, j4, j5, j6)
+type SixJKey = (i32, i32, i32, i32, i32, i32);
+
+/// Collect all 6j symbol keys needed for the Hamiltonian construction.
+fn collect_required_6j_keys(
+    basis: &[Vec<u8>],
+    two_s_list: &[i32],
+    interactions: &[((usize, usize), f64)],
+) -> AHashSet<SixJKey> {
+    let mut keys = AHashSet::new();
+
+    for state in basis {
+        for &((site_i, site_j), _) in interactions {
+            collect_6j_keys_for_state(two_s_list, state, site_i, site_j, &mut keys);
+        }
+    }
+
+    keys
+}
+
+/// Collect 6j keys needed for computing transformation coefficient for a single state.
+fn collect_6j_keys_for_state(
+    two_s_list: &[i32],
+    left_state: &[u8],
+    site_i: usize,
+    site_j: usize,
+    keys: &mut AHashSet<SixJKey>,
+) {
+    let two_si = two_s_list[site_i];
+    let two_sj = two_s_list[site_j];
+
+    // Iterate over all possible K values
+    let mut two_k = (two_si - two_sj).abs();
+    while two_k <= two_si + two_sj {
+        if site_j == site_i + 1 {
+            // Adjacent case
+            if site_i > 0 {
+                let (two_j_im1, two_j_i, two_j_ip1) = (
+                    left_state[site_i - 1] as i32,
+                    left_state[site_i] as i32,
+                    left_state[site_i + 1] as i32,
+                );
+                let two_s_i = two_s_list[site_i];
+                let two_s_ip1 = two_s_list[site_i + 1];
+                keys.insert((two_j_im1, two_s_i, two_j_i, two_s_ip1, two_j_ip1, two_k));
+            }
+        } else {
+            // Non-adjacent case: collect recursively
+            let spin_order: Vec<usize> = (0..two_s_list.len()).collect();
+            collect_bubble_6j_keys(
+                two_s_list,
+                left_state,
+                &spin_order,
+                site_i,
+                site_j,
+                two_k,
+                keys,
+            );
+        }
+        two_k += 2;
+    }
+}
+
+/// Recursively collect 6j keys for bubble recoupling.
+fn collect_bubble_6j_keys(
+    two_s_list: &[i32],
+    left_state: &[u8],
+    spin_order: &[usize],
+    site_i: usize,
+    current_pos: usize,
+    two_k: i32,
+    keys: &mut AHashSet<SixJKey>,
+) {
+    let two_s_i = two_s_list[spin_order[site_i]];
+    let two_s_j = two_s_list[spin_order[current_pos]];
+
+    // Base case
+    if current_pos == site_i + 1 {
+        if site_i > 0 {
+            let (two_j_im1, two_j_i, two_j_ip1) = (
+                left_state[site_i - 1] as i32,
+                left_state[site_i] as i32,
+                left_state[site_i + 1] as i32,
+            );
+            keys.insert((two_j_im1, two_s_i, two_j_i, two_s_j, two_j_ip1, two_k));
+        }
+        return;
+    }
+
+    // Recursive case
+    let p = current_pos;
+    let two_s_pm1 = two_s_list[spin_order[p - 1]];
+    let two_j_p = left_state[p] as i32;
+    let two_j_pm1 = left_state[p - 1] as i32;
+    let two_j_pm2 = if p >= 2 {
+        left_state[p - 2] as i32
+    } else {
+        two_s_list[spin_order[0]]
+    };
+
+    let two_f_min = (two_j_pm2 - two_s_j).abs().max((two_s_pm1 - two_j_p).abs());
+    let two_f_max = (two_j_pm2 + two_s_j).min(two_s_pm1 + two_j_p);
+
+    let parity = (two_j_pm2 + two_s_j) % 2;
+    if parity != (two_s_pm1 + two_j_p) % 2 {
+        return;
+    }
+
+    let mut two_f = if two_f_min % 2 == parity {
+        two_f_min
+    } else {
+        two_f_min + 1
+    };
+
+    while two_f <= two_f_max {
+        // Add this 6j key
+        keys.insert((two_j_pm2, two_s_pm1, two_j_pm1, two_j_p, two_s_j, two_f));
+
+        // Recurse with modified state
+        let mut modified_state = left_state.to_vec();
+        modified_state[p - 1] = two_f as u8;
+        let mut modified_order = spin_order.to_vec();
+        modified_order.swap(p - 1, p);
+
+        collect_bubble_6j_keys(
+            two_s_list,
+            &modified_state,
+            &modified_order,
+            site_i,
+            p - 1,
+            two_k,
+            keys,
+        );
+
+        two_f += 2;
+    }
+}
+
+/// Precompute all required 6j symbols in parallel.
+fn precompute_6j_table(keys: AHashSet<SixJKey>, max_two_j: usize) -> AHashMap<SixJKey, f64> {
+    let keys_vec: Vec<_> = keys.into_iter().collect();
+
+    let entries: Vec<_> = keys_vec
+        .par_iter()
+        .map_init(
+            || WignerSymbols::new(max_two_j),
+            |wigner, &(j1, j2, j3, j4, j5, j6)| {
+                let val = wigner.wigner_6j(j1, j2, j3, j4, j5, j6);
+                ((j1, j2, j3, j4, j5, j6), val)
+            },
+        )
+        .collect();
+
+    entries.into_iter().collect()
+}
+
+/// Look up a 6j symbol from precomputed table. Returns 0.0 if not found.
+#[inline]
+fn lookup_6j(table: &AHashMap<SixJKey, f64>, j1: i32, j2: i32, j3: i32, j4: i32, j5: i32, j6: i32) -> f64 {
+    *table.get(&(j1, j2, j3, j4, j5, j6)).unwrap_or(&0.0)
+}
+
+/// Compute the transformation coefficient using precomputed 6j table.
+fn compute_transformation_coeff_with_table(
+    sixj_table: &AHashMap<SixJKey, f64>,
     two_s_list: &[i32],
     left_state: &[u8],
     site_i: usize,
@@ -25,7 +187,6 @@ fn compute_transformation_coeff_6j(
     // Adjacent sites (i, i+1): direct 6j recoupling
     if site_j == site_i + 1 {
         if site_i == 0 {
-            // For i=0, j=1: coefficient is δ_{J_1, K}
             return if left_state[1] as i32 == two_k {
                 1.0
             } else {
@@ -45,14 +206,14 @@ fn compute_transformation_coeff_6j(
             -1.0
         };
         let dim_factor = (((two_j_i + 1) * (two_k + 1)) as f64).sqrt();
-        let sixj = wigner.wigner_6j(two_j_im1, two_s_i, two_j_i, two_s_ip1, two_j_ip1, two_k);
+        let sixj = lookup_6j(sixj_table, two_j_im1, two_s_i, two_j_i, two_s_ip1, two_j_ip1, two_k);
         return phase * dim_factor * sixj;
     }
 
     // Non-adjacent sites: bubble S_j towards S_i
     let spin_order: Vec<usize> = (0..two_s_list.len()).collect();
-    compute_bubble_with_order(
-        wigner,
+    compute_bubble_with_table(
+        sixj_table,
         two_s_list,
         left_state,
         &spin_order,
@@ -62,9 +223,9 @@ fn compute_transformation_coeff_6j(
     )
 }
 
-/// Recursively bubble S_j towards S_i using 6j recoupling.
-fn compute_bubble_with_order(
-    wigner: &mut WignerSymbols,
+/// Recursively bubble S_j towards S_i using precomputed 6j table.
+fn compute_bubble_with_table(
+    sixj_table: &AHashMap<SixJKey, f64>,
     two_s_list: &[i32],
     left_state: &[u8],
     spin_order: &[usize],
@@ -95,7 +256,7 @@ fn compute_bubble_with_order(
             -1.0
         };
         let dim_factor = (((two_j_i + 1) * (two_k + 1)) as f64).sqrt();
-        let sixj = wigner.wigner_6j(two_j_im1, two_s_i, two_j_i, two_s_j, two_j_ip1, two_k);
+        let sixj = lookup_6j(sixj_table, two_j_im1, two_s_i, two_j_i, two_s_j, two_j_ip1, two_k);
         return phase * dim_factor * sixj;
     }
 
@@ -133,7 +294,7 @@ fn compute_bubble_with_order(
             -1.0
         };
         let dim_factor = (((two_j_pm1 + 1) * (two_f + 1)) as f64).sqrt();
-        let sixj = wigner.wigner_6j(two_j_pm2, two_s_pm1, two_j_pm1, two_j_p, two_s_j, two_f);
+        let sixj = lookup_6j(sixj_table, two_j_pm2, two_s_pm1, two_j_pm1, two_j_p, two_s_j, two_f);
 
         if sixj.abs() >= 1e-15 {
             let mut modified_state = left_state.to_vec();
@@ -144,8 +305,8 @@ fn compute_bubble_with_order(
             total += phase
                 * dim_factor
                 * sixj
-                * compute_bubble_with_order(
-                    wigner,
+                * compute_bubble_with_table(
+                    sixj_table,
                     two_s_list,
                     &modified_state,
                     &modified_order,
@@ -157,6 +318,33 @@ fn compute_bubble_with_order(
         two_f += 2;
     }
     total
+}
+
+/// Compute ⟨bra|S_i·S_j|ket⟩ matrix element using precomputed 6j table.
+fn compute_si_sj_element_with_table(
+    sixj_table: &AHashMap<SixJKey, f64>,
+    two_s_list: &[i32],
+    bra: &[u8],
+    ket: &[u8],
+    site_i: usize,
+    site_j: usize,
+) -> f64 {
+    let (two_si, two_sj) = (two_s_list[site_i], two_s_list[site_j]);
+    let mut result = 0.0;
+    let mut two_k = (two_si - two_sj).abs();
+    while two_k <= two_si + two_sj {
+        let coeff_bra =
+            compute_transformation_coeff_with_table(sixj_table, two_s_list, bra, site_i, site_j, two_k);
+        if coeff_bra.abs() >= 1e-15 {
+            let coeff_ket =
+                compute_transformation_coeff_with_table(sixj_table, two_s_list, ket, site_i, site_j, two_k);
+            if coeff_ket.abs() >= 1e-15 {
+                result += eigenvalue_si_sj(two_si, two_sj, two_k) * coeff_bra * coeff_ket;
+            }
+        }
+        two_k += 2;
+    }
+    result
 }
 
 /// Hash of the fixed parts of a basis state for selection rule grouping.
@@ -208,56 +396,58 @@ pub fn make_su2_heisenberg_hamiltonian(
 
     let max_two_j = (model.two_s_list.iter().sum::<i32>() + 10) as usize;
     let two_s_list = model.two_s_list.clone();
-    let interactions: Vec<_> = model.exchange.iter().collect();
+    let interactions: Vec<_> = model.exchange.iter().map(|(&k, &v)| (k, v)).collect();
     let diagonal_shift = model.diagonal_shift;
 
-    let (basis_ref, interactions_ref, two_s_list_ref) = (&basis, &interactions, &two_s_list);
+    // Precompute all required 6j symbols
+    let sixj_keys = collect_required_6j_keys(&basis, &two_s_list, &interactions);
+    let sixj_table = with_pool(num_threads, || Ok(precompute_6j_table(sixj_keys, max_two_j)))?;
+
+    let (basis_ref, interactions_ref, two_s_list_ref, sixj_table_ref) =
+        (&basis, &interactions, &two_s_list, &sixj_table);
+
     with_pool(num_threads, move || -> Result<CsrMatrix> {
         let interaction_groups: Vec<_> = interactions_ref
             .par_iter()
-            .map(|&(&(site_i, site_j), _)| build_selection_groups(basis_ref, site_i, site_j))
+            .map(|&((site_i, site_j), _)| build_selection_groups(basis_ref, site_i, site_j))
             .collect();
 
-        let compute_row =
-            |wigner: &mut WignerSymbols, row_idx: usize, bra: &[u8]| -> Vec<(usize, f64)> {
-                let mut contributions: AHashMap<usize, f64> = AHashMap::new();
-                if diagonal_shift.abs() > 1e-15 {
-                    contributions.insert(row_idx, diagonal_shift);
-                }
-                for (int_idx, &(&(site_i, site_j), &coeff)) in interactions_ref.iter().enumerate() {
-                    let key = extract_selection_key_hash(bra, site_i, site_j);
-                    if let Some(group) = interaction_groups[int_idx].get(&key) {
-                        for &col_idx in group {
-                            let elem = compute_si_sj_element(
-                                wigner,
-                                two_s_list_ref,
-                                bra,
-                                &basis_ref[col_idx],
-                                site_i,
-                                site_j,
-                            );
-                            if elem.abs() > 1e-15 {
-                                *contributions.entry(col_idx).or_insert(0.0) += coeff * elem;
-                            }
+        let compute_row = |row_idx: usize, bra: &[u8]| -> Vec<(usize, f64)> {
+            let mut contributions: AHashMap<usize, f64> = AHashMap::new();
+            if diagonal_shift.abs() > 1e-15 {
+                contributions.insert(row_idx, diagonal_shift);
+            }
+            for (int_idx, &((site_i, site_j), coeff)) in interactions_ref.iter().enumerate() {
+                let key = extract_selection_key_hash(bra, site_i, site_j);
+                if let Some(group) = interaction_groups[int_idx].get(&key) {
+                    for &col_idx in group {
+                        let elem = compute_si_sj_element_with_table(
+                            sixj_table_ref,
+                            two_s_list_ref,
+                            bra,
+                            &basis_ref[col_idx],
+                            site_i,
+                            site_j,
+                        );
+                        if elem.abs() > 1e-15 {
+                            *contributions.entry(col_idx).or_insert(0.0) += coeff * elem;
                         }
                     }
                 }
-                let mut entries: Vec<_> = contributions
-                    .into_iter()
-                    .filter(|(_, v)| v.abs() > MATRIX_ZERO_EPS)
-                    .collect();
-                entries.sort_unstable_by_key(|(col, _)| *col);
-                entries
-            };
+            }
+            let mut entries: Vec<_> = contributions
+                .into_iter()
+                .filter(|(_, v)| v.abs() > MATRIX_ZERO_EPS)
+                .collect();
+            entries.sort_unstable_by_key(|(col, _)| *col);
+            entries
+        };
 
         // Phase 1: count nnz per row
         let row_nnz: Vec<_> = basis_ref
             .par_iter()
             .enumerate()
-            .map_init(
-                || WignerSymbols::new(max_two_j),
-                |w, (i, bra)| compute_row(w, i, bra).len(),
-            )
+            .map(|(i, bra)| compute_row(i, bra).len())
             .collect();
 
         // Prefix sum for CSR rows
@@ -271,21 +461,18 @@ pub fn make_su2_heisenberg_hamiltonian(
         let vals = vec![0.0; total_nnz];
 
         // Phase 2: fill cols/vals
-        basis_ref.par_iter().enumerate().for_each_init(
-            || WignerSymbols::new(max_two_j),
-            |wigner, (row_idx, bra)| {
-                let entries = compute_row(wigner, row_idx, bra);
-                let start = rows[row_idx];
-                unsafe {
-                    let (cols_ptr, vals_ptr) =
-                        (cols.as_ptr() as *mut usize, vals.as_ptr() as *mut f64);
-                    for (i, (col, val)) in entries.into_iter().enumerate() {
-                        *cols_ptr.add(start + i) = col;
-                        *vals_ptr.add(start + i) = val;
-                    }
+        basis_ref.par_iter().enumerate().for_each(|(row_idx, bra)| {
+            let entries = compute_row(row_idx, bra);
+            let start = rows[row_idx];
+            unsafe {
+                let (cols_ptr, vals_ptr) =
+                    (cols.as_ptr() as *mut usize, vals.as_ptr() as *mut f64);
+                for (i, (col, val)) in entries.into_iter().enumerate() {
+                    *cols_ptr.add(start + i) = col;
+                    *vals_ptr.add(start + i) = val;
                 }
-            },
-        );
+            }
+        });
 
         Ok(CsrMatrix {
             row_dim: dim,
@@ -295,33 +482,6 @@ pub fn make_su2_heisenberg_hamiltonian(
             vals,
         })
     })
-}
-
-/// Compute ⟨bra|S_i·S_j|ket⟩ matrix element.
-fn compute_si_sj_element(
-    wigner: &mut WignerSymbols,
-    two_s_list: &[i32],
-    bra: &[u8],
-    ket: &[u8],
-    site_i: usize,
-    site_j: usize,
-) -> f64 {
-    let (two_si, two_sj) = (two_s_list[site_i], two_s_list[site_j]);
-    let mut result = 0.0;
-    let mut two_k = (two_si - two_sj).abs();
-    while two_k <= two_si + two_sj {
-        let coeff_bra =
-            compute_transformation_coeff_6j(wigner, two_s_list, bra, site_i, site_j, two_k);
-        if coeff_bra.abs() >= 1e-15 {
-            let coeff_ket =
-                compute_transformation_coeff_6j(wigner, two_s_list, ket, site_i, site_j, two_k);
-            if coeff_ket.abs() >= 1e-15 {
-                result += eigenvalue_si_sj(two_si, two_sj, two_k) * coeff_bra * coeff_ket;
-            }
-        }
-        two_k += 2;
-    }
-    result
 }
 
 #[cfg(test)]

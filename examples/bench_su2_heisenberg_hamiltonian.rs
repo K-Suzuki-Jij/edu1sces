@@ -36,7 +36,7 @@ fn benchmark(
 }
 
 fn main() {
-    let n = 26;
+    let n = 24;
     let two_s = 1; // S = 1/2
     let total_s = 0.0;
     let num_iterations = 1;
