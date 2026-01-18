@@ -18,12 +18,7 @@ fn benchmark(
     total_s: f64,
     num_threads: usize,
     num_iterations: usize,
-) -> f64 {
-    // Warmup
-    for _ in 0..2 {
-        let _ = make_su2_heisenberg_hamiltonian(model, total_s, num_threads).unwrap();
-    }
-
+) -> (f64, usize, usize) {
     let t0 = Instant::now();
     let mut h = None;
     for _ in 0..num_iterations {
@@ -33,16 +28,18 @@ fn benchmark(
 
     let h = h.unwrap();
     let avg_time_ms = dt.as_millis() as f64 / num_iterations as f64;
+    let dim = h.row_dim;
+    let nnz = h.nnz();
 
     std::hint::black_box(h);
-    avg_time_ms
+    (avg_time_ms, dim, nnz)
 }
 
 fn main() {
-    let n = 18;
+    let n = 28;
     let two_s = 1; // S = 1/2
     let total_s = 0.0;
-    let num_iterations = 5;
+    let num_iterations = 1;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
     let model = build_su2_heisenberg_chain(two_s, n, 1.0);
@@ -50,20 +47,14 @@ fn main() {
     println!("=== make_su2_heisenberg_hamiltonian Benchmark ===");
     println!("n={}, two_s={}, total_s={}\n", n, two_s, total_s);
 
-    println!("Building basis...");
-    let t0 = Instant::now();
-    let (basis, _) = model.build_basis(total_s).unwrap();
-    let dt = t0.elapsed();
-    println!("  dim={}, time={:?}", basis.len(), dt);
-
-    // Build once to get nnz
-    let h = make_su2_heisenberg_hamiltonian(&model, total_s, 1).unwrap();
-    println!("  nnz={}\n", h.nnz());
-
     println!("--- make_su2_heisenberg_hamiltonian ---");
     let mut baseline_time_ms = None;
+    let mut last_dim = 0;
+    let mut last_nnz = 0;
     for &threads in &thread_counts {
-        let time = benchmark(&model, total_s, threads, num_iterations);
+        let (time, dim, nnz) = benchmark(&model, total_s, threads, num_iterations);
+        last_dim = dim;
+        last_nnz = nnz;
         if let Some(base) = baseline_time_ms {
             let speedup = base / time;
             println!(
@@ -75,4 +66,5 @@ fn main() {
             baseline_time_ms = Some(time);
         }
     }
+    println!("\n  dim={}, nnz={}", last_dim, last_nnz);
 }

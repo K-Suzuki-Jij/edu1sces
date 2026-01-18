@@ -5,6 +5,8 @@
 //!
 //! Uses log-factorials for numerical stability with log-exp trick.
 
+use ahash::AHashMap;
+
 /// Check if three angular momenta satisfy the triangle inequality.
 /// Arguments are 2*j values (integers).
 /// Returns true if |j1 - j2| <= j3 <= j1 + j2 and j1 + j2 + j3 is even.
@@ -40,8 +42,10 @@ fn sixj_selection_ok(
 /// - Uses doubled integers: two_j = 2*j
 /// - Log-factorial table is precomputed at initialization
 /// - Uses log-exp trick for numerical stability
+/// - 6j symbols are cached per-instance (create one per thread for parallel use)
 pub struct WignerSymbols {
     log_fact: Vec<f64>,
+    cache_6j: AHashMap<(i32, i32, i32, i32, i32, i32), f64>,
 }
 
 impl WignerSymbols {
@@ -55,7 +59,15 @@ impl WignerSymbols {
         for i in 1..table_size {
             log_fact[i] = log_fact[i - 1] + (i as f64).ln();
         }
-        Self { log_fact }
+        Self {
+            log_fact,
+            cache_6j: AHashMap::new(),
+        }
+    }
+
+    /// Return the number of cached 6j symbols
+    pub fn cache_size(&self) -> usize {
+        self.cache_6j.len()
     }
 
     /// Access log(n!)
@@ -74,7 +86,7 @@ impl WignerSymbols {
         0.5 * (self.lf(t1) + self.lf(t2) + self.lf(t3) - self.lf(t4))
     }
 
-    /// Wigner 6j symbol using Racah formula.
+    /// Wigner 6j symbol using Racah formula (with caching).
     ///
     /// ```text
     /// { j1  j2  j3 }
@@ -84,6 +96,32 @@ impl WignerSymbols {
     /// Arguments are 2*j values (integers).
     /// Returns 0.0 if any triangle condition is not satisfied.
     pub fn wigner_6j(
+        &mut self,
+        two_j1: i32,
+        two_j2: i32,
+        two_j3: i32,
+        two_j4: i32,
+        two_j5: i32,
+        two_j6: i32,
+    ) -> f64 {
+        let key = (two_j1, two_j2, two_j3, two_j4, two_j5, two_j6);
+
+        // Check cache first
+        if let Some(val) = self.cache_6j.get(&key) {
+            return *val;
+        }
+
+        // Compute the value
+        let result = self.wigner_6j_uncached(two_j1, two_j2, two_j3, two_j4, two_j5, two_j6);
+
+        // Store in cache
+        self.cache_6j.insert(key, result);
+
+        result
+    }
+
+    /// Wigner 6j symbol computation (uncached).
+    fn wigner_6j_uncached(
         &self,
         two_j1: i32,
         two_j2: i32,
@@ -320,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_6j_zeros() {
-        let w = make_wigner();
+        let mut w = make_wigner();
         // Triangle condition violation
         assert_eq!(w.wigner_6j(2, 2, 6, 2, 2, 2), 0.0);
 
@@ -339,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_6j_known_values() {
-        let w = make_wigner();
+        let mut w = make_wigner();
 
         // {1/2, 1/2, 0; 1/2, 1/2, 1} = 1/2
         let val = w.wigner_6j(1, 1, 0, 1, 1, 2);
@@ -376,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_6j_larger_spins() {
-        let w = make_wigner();
+        let mut w = make_wigner();
 
         // {3/2, 1, 1/2; 1, 3/2, 2} = -sqrt(6)/12
         let val = w.wigner_6j(3, 2, 1, 2, 3, 4);
@@ -415,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_6j_symmetry() {
-        let w = make_wigner();
+        let mut w = make_wigner();
 
         let v1 = w.wigner_6j(2, 4, 4, 2, 2, 4);
         let v2 = w.wigner_6j(4, 2, 4, 2, 2, 4);

@@ -18,11 +18,15 @@ pub struct SU2HeisenbergModel {
     #[pyo3(get)]
     pub two_s_list: Vec<i32>,
 
-    /// isotropic exchange J_ij:
+    /// isotropic exchange J_ij (normalized: i < j):
     /// J_ij * S_i · S_j = J_ij * (Sx_i Sx_j + Sy_i Sy_j + Sz_i Sz_j)
     ///                  = J_ij * ((1/2)(S_i^+ S_j^- + S_i^- S_j^+) + Sz_i Sz_j)
     #[pyo3(get)]
     pub exchange: HashMap<(usize, usize), f64>,
+
+    /// Diagonal shift from self-interactions: Σ_i J_ii * S_i(S_i+1)
+    #[pyo3(get)]
+    pub diagonal_shift: f64,
 }
 
 impl SU2HeisenbergModel {
@@ -43,9 +47,7 @@ impl SU2HeisenbergModel {
 
     /// Build SU(2) basis for a fixed total spin S_total.
     ///
-    /// Returns (basis, inverse) where:
-    /// - basis: Vec<Vec<u8>> - list of basis states (sorted lexicographically)
-    /// - inverse: AHashMap<Vec<u8>, usize> - map from state to index
+    /// Returns basis: Vec<Vec<u8>> - list of basis states (sorted lexicographically)
     ///
     /// Each basis state is a Vec<u8> of length N:
     ///   [2*J_1, 2*J_2, ..., 2*J_N]
@@ -55,7 +57,7 @@ impl SU2HeisenbergModel {
     ///   J_N = S_total (target).
     ///
     /// The stored values are 2*J (integers) in u8, so we require sum(2S_i) <= 255.
-    pub fn build_basis(&self, total_s: f64) -> Result<(Vec<Vec<u8>>, AHashMap<Vec<u8>, usize>)> {
+    pub fn build_basis(&self, total_s: f64) -> Result<Vec<Vec<u8>>> {
         let two_s_f = 2.0 * total_s;
         let two_s_target = two_s_f.round() as i32;
 
@@ -78,10 +80,10 @@ impl SU2HeisenbergModel {
 
         // Parity + range checks
         if ((sum_two_s - two_s_target) & 1) != 0 {
-            return Ok((Vec::new(), AHashMap::new()));
+            return Ok(Vec::new());
         }
         if two_s_target > sum_two_s {
-            return Ok((Vec::new(), AHashMap::new()));
+            return Ok(Vec::new());
         }
 
         // N=1: only possible if S_tot == S_1
@@ -89,11 +91,9 @@ impl SU2HeisenbergModel {
             let two_s1 = self.two_s_list[0];
             if two_s1 == two_s_target {
                 let state = vec![two_s1 as u8];
-                let mut inv = AHashMap::with_capacity(1);
-                inv.insert(state.clone(), 0);
-                return Ok((vec![state], inv));
+                return Ok(vec![state]);
             }
-            return Ok((Vec::new(), AHashMap::new()));
+            return Ok(Vec::new());
         }
 
         // suffix_sum_two_s[i] = sum_{k=i}^{n-1} two_s_list[k]
@@ -118,7 +118,7 @@ impl SU2HeisenbergModel {
 
         let two_s1 = self.two_s_list[0];
         if !can_reach(two_s1, suffix_sum_two_s[1], two_s_target) {
-            return Ok((Vec::new(), AHashMap::new()));
+            return Ok(Vec::new());
         }
 
         let mut basis: Vec<Vec<u8>> = Vec::new();
@@ -189,12 +189,7 @@ impl SU2HeisenbergModel {
 
         basis.sort_unstable();
 
-        let mut inverse: AHashMap<Vec<u8>, usize> = AHashMap::with_capacity(basis.len());
-        for (idx, state) in basis.iter().enumerate() {
-            inverse.insert(state.clone(), idx);
-        }
-
-        Ok((basis, inverse))
+        Ok(basis)
     }
 }
 
@@ -226,10 +221,26 @@ impl SU2HeisenbergModel {
 
         Self::check_pairs("exchange", num_sites, &exchange)?;
 
+        // Normalize exchange: separate self-interactions and pair interactions
+        // S_i · S_j = S_j · S_i, so (i, j) and (j, i) should be merged
+        let mut normalized_exchange = HashMap::new();
+        let mut diagonal_shift = 0.0;
+        for (&(i, j), &v) in exchange.iter() {
+            if i == j {
+                let two_si = two_s_list[i];
+                let si_si_plus_1 = (two_si as f64 / 2.0) * (two_si as f64 / 2.0 + 1.0);
+                diagonal_shift += v * si_si_plus_1;
+            } else {
+                let key = if i < j { (i, j) } else { (j, i) };
+                *normalized_exchange.entry(key).or_insert(0.0) += v;
+            }
+        }
+
         Ok(Self {
             num_sites,
             two_s_list,
-            exchange,
+            exchange: normalized_exchange,
+            diagonal_shift,
         })
     }
 
@@ -328,6 +339,7 @@ mod tests {
             num_sites: 2,
             two_s_list: vec![1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         assert_eq!(m.calc_dim_su2_sector(0.0).unwrap(), 1); // singlet
@@ -347,6 +359,7 @@ mod tests {
             num_sites: 3,
             two_s_list: vec![1, 1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         assert_eq!(m.calc_dim_su2_sector(0.5).unwrap(), 4);
@@ -366,6 +379,7 @@ mod tests {
             num_sites: 4,
             two_s_list: vec![1, 1, 1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         assert_eq!(m.calc_dim_su2_sector(0.0).unwrap(), 2);
@@ -384,6 +398,7 @@ mod tests {
             num_sites: 2,
             two_s_list: vec![1, 2],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         assert_eq!(m.calc_dim_su2_sector(0.5).unwrap(), 2);
@@ -400,6 +415,7 @@ mod tests {
             num_sites: 1,
             two_s_list: vec![1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         assert_eq!(m.calc_dim_su2_sector(0.5).unwrap(), 2);
@@ -411,6 +427,7 @@ mod tests {
             num_sites: 1,
             two_s_list: vec![2],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         assert_eq!(m.calc_dim_su2_sector(1.0).unwrap(), 3);
@@ -424,6 +441,7 @@ mod tests {
             num_sites: 2,
             two_s_list: vec![1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         // Negative spin returns 0 (not an error)
@@ -437,19 +455,17 @@ mod tests {
             num_sites: 1,
             two_s_list: vec![1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         // S=1/2: one basis state [2*J_1] = [1]
-        let (basis, inverse) = m.build_basis(0.5).unwrap();
+        let basis = m.build_basis(0.5).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8]);
-        assert_eq!(inverse.len(), 1);
-        assert_eq!(inverse[&vec![1u8]], 0);
 
         // S=0: forbidden
-        let (basis, inverse) = m.build_basis(0.0).unwrap();
+        let basis = m.build_basis(0.0).unwrap();
         assert_eq!(basis.len(), 0);
-        assert_eq!(inverse.len(), 0);
     }
 
     #[test]
@@ -459,19 +475,18 @@ mod tests {
             num_sites: 2,
             two_s_list: vec![1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         // S=0: one basis [2*J_1, 2*J_2] = [1, 0]
-        let (basis, inverse) = m.build_basis(0.0).unwrap();
+        let basis = m.build_basis(0.0).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8, 0]);
-        assert_eq!(inverse[&vec![1u8, 0]], 0);
 
         // S=1: one basis [2*J_1, 2*J_2] = [1, 2]
-        let (basis, inverse) = m.build_basis(1.0).unwrap();
+        let basis = m.build_basis(1.0).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8, 2]);
-        assert_eq!(inverse[&vec![1u8, 2]], 0);
     }
 
     #[test]
@@ -481,28 +496,23 @@ mod tests {
             num_sites: 3,
             two_s_list: vec![1, 1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         // S=1/2: two bases
         // [2*J_1, 2*J_2, 2*J_3] where J_3 = 1/2
         // Path 1: J_1=1/2, J_2=0, then 0 ⊗ 1/2 = 1/2 → [1, 0, 1]
         // Path 2: J_1=1/2, J_2=1, then 1 ⊗ 1/2 = 1/2 or 3/2, pick 1/2 → [1, 2, 1]
-        let (basis, inverse) = m.build_basis(0.5).unwrap();
+        let basis = m.build_basis(0.5).unwrap();
         assert_eq!(basis.len(), 2);
         assert!(basis.contains(&vec![1u8, 0, 1]));
         assert!(basis.contains(&vec![1u8, 2, 1]));
-        assert_eq!(inverse.len(), 2);
-        // Check inverse consistency
-        for (idx, state) in basis.iter().enumerate() {
-            assert_eq!(inverse[state], idx);
-        }
 
         // S=3/2: one basis
         // J_1=1/2, J_2=1, then 1 ⊗ 1/2 = 3/2 → [1, 2, 3]
-        let (basis, inverse) = m.build_basis(1.5).unwrap();
+        let basis = m.build_basis(1.5).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8, 2, 3]);
-        assert_eq!(inverse[&vec![1u8, 2, 3]], 0);
     }
 
     #[test]
@@ -512,25 +522,23 @@ mod tests {
             num_sites: 4,
             two_s_list: vec![1, 1, 1, 1],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         // S=0: 2 bases
-        let (basis, inverse) = m.build_basis(0.0).unwrap();
+        let basis = m.build_basis(0.0).unwrap();
         assert_eq!(basis.len(), 2);
-        assert_eq!(inverse.len(), 2);
 
         // S=1: 3 bases
-        let (basis, inverse) = m.build_basis(1.0).unwrap();
+        let basis = m.build_basis(1.0).unwrap();
         assert_eq!(basis.len(), 3);
-        assert_eq!(inverse.len(), 3);
 
         // S=2: 1 basis
         // [2*J_1, 2*J_2, 2*J_3, 2*J_4] = [1, 2, 3, 4]
         // J_1=1/2, J_2=1, J_3=3/2, J_4=2
-        let (basis, inverse) = m.build_basis(2.0).unwrap();
+        let basis = m.build_basis(2.0).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8, 2, 3, 4]);
-        assert_eq!(inverse[&vec![1u8, 2, 3, 4]], 0);
     }
 
     #[test]
@@ -540,18 +548,17 @@ mod tests {
             num_sites: 2,
             two_s_list: vec![1, 2],
             exchange: HashMap::new(),
+            diagonal_shift: 0.0,
         };
 
         // S=1/2: [2*J_1, 2*J_2] = [1, 1]
-        let (basis, inverse) = m.build_basis(0.5).unwrap();
+        let basis = m.build_basis(0.5).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8, 1]);
-        assert_eq!(inverse[&vec![1u8, 1]], 0);
 
         // S=3/2: [2*J_1, 2*J_2] = [1, 3]
-        let (basis, inverse) = m.build_basis(1.5).unwrap();
+        let basis = m.build_basis(1.5).unwrap();
         assert_eq!(basis.len(), 1);
         assert_eq!(basis[0], vec![1u8, 3]);
-        assert_eq!(inverse[&vec![1u8, 3]], 0);
     }
 }
