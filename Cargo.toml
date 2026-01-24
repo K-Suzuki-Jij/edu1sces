@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
+dashmap = "6.1"
 lapack = "0.20.0"
 pyo3 = { version = "0.27.2", features = ["anyhow"] }
 rand = "0.9.2"
