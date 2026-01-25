@@ -50,20 +50,20 @@ impl BasisInfo {
 /// Result of solving a model.
 #[pyclass]
 pub struct SolverResult {
-    /// Ground state energy
+    /// Eigenvalues (energies) for each computed state
     #[pyo3(get)]
-    pub energy: f64,
-    /// Ground state eigenvector
+    pub energies: Vec<f64>,
+    /// Eigenvectors for each computed state
     #[pyo3(get)]
-    pub eigenvector: Vec<f64>,
+    pub eigenvectors: Vec<Vec<f64>>,
     /// Basis information for expectation value calculations
     pub basis_info: BasisInfo,
-    /// Lanczos solver log
+    /// Lanczos solver logs for each state
     #[pyo3(get)]
-    pub lanczos_log: LanczosLog,
-    /// Inverse iteration solver log
+    pub lanczos_logs: Vec<LanczosLog>,
+    /// Inverse iteration solver logs for each state
     #[pyo3(get)]
-    pub inverse_iteration_log: InverseIterationLog,
+    pub inverse_iteration_logs: Vec<InverseIterationLog>,
 }
 
 #[pymethods]
@@ -74,6 +74,7 @@ impl SolverResult {
     /// * `local_op` - CSR matrix representing the local operator
     /// * `site` - Site index
     /// * `num_threads` - Number of threads for parallel computation
+    /// * `state_index` - Index of the eigenstate (0 = ground state)
     ///
     /// # Returns
     /// Expectation value `<psi| O_site |psi>`.
@@ -82,7 +83,16 @@ impl SolverResult {
         local_op: &CsrMatrix,
         site: usize,
         num_threads: usize,
+        state_index: usize,
     ) -> Result<f64> {
+        if state_index >= self.eigenvectors.len() {
+            anyhow::bail!(
+                "state_index {} out of range (num_states = {})",
+                state_index,
+                self.eigenvectors.len()
+            );
+        }
+
         let current_qn = self.basis_info.current_quantum_numbers.clone();
 
         // Ensure basis exists (should already be cached from solve)
@@ -92,11 +102,17 @@ impl SolverResult {
         let pool = build_pool(num_threads)?;
 
         // Compute M|psi>
-        let m_psi =
-            self.apply_local_op_to_eigenvector(local_op, site, &current_qn, &current_qn, &pool)?;
+        let m_psi = self.apply_local_op_to_eigenvector(
+            state_index,
+            local_op,
+            site,
+            &current_qn,
+            &current_qn,
+            &pool,
+        )?;
 
         // Compute <psi|M|psi>
-        dot(&pool, &self.eigenvector, &m_psi)
+        dot(&pool, &self.eigenvectors[state_index], &m_psi)
     }
 
     /// Compute two-point correlation function <psi|O1_{site1} O2_{site2}|psi>.
@@ -110,6 +126,7 @@ impl SolverResult {
     /// * `op2` - CSR matrix representing local operator 2
     /// * `site2` - Site index for operator 2
     /// * `num_threads` - Number of threads for parallel computation
+    /// * `state_index` - Index of the eigenstate (0 = ground state)
     ///
     /// # Returns
     /// Correlation value <psi|O1_{site1} O2_{site2}|psi>.
@@ -120,7 +137,16 @@ impl SolverResult {
         op2: &CsrMatrix,
         site2: usize,
         num_threads: usize,
+        state_index: usize,
     ) -> Result<f64> {
+        if state_index >= self.eigenvectors.len() {
+            anyhow::bail!(
+                "state_index {} out of range (num_states = {})",
+                state_index,
+                self.eigenvectors.len()
+            );
+        }
+
         // Compute all possible quantum number transitions for each operator
         let transitions_op1 = self.compute_all_quantum_number_transitions(op1, site1);
         let transitions_op2 = self.compute_all_quantum_number_transitions(op2, site2);
@@ -161,6 +187,7 @@ impl SolverResult {
         for intermediate_qn in &intermediate_qns {
             // O2|psi>: current -> intermediate
             let vec_o2_psi = self.apply_local_op_to_eigenvector(
+                state_index,
                 op2,
                 site2,
                 &current_qn,
@@ -171,6 +198,7 @@ impl SolverResult {
             // O1†|psi>: current -> intermediate
             // Using transpose: O1† = O1^T, so we apply the transposed matrix
             let vec_o1dag_psi = self.apply_local_op_to_eigenvector(
+                state_index,
                 &op1_transpose,
                 site1,
                 &current_qn,
@@ -233,6 +261,7 @@ impl SolverResult {
     /// Both bases must already exist in the cache.
     fn apply_local_op_to_eigenvector(
         &self,
+        state_index: usize,
         local_op: &CsrMatrix,
         site: usize,
         in_qn: &[i32],
@@ -241,7 +270,7 @@ impl SolverResult {
     ) -> Result<Vec<f64>> {
         let out_basis = self.basis_info.get_basis(out_qn)?;
         let in_basis = self.basis_info.get_basis(in_qn)?;
-        let eigenvector = &self.eigenvector;
+        let eigenvector = &self.eigenvectors[state_index];
         let site_base = out_basis.site_base[site];
 
         Ok(pool.install(|| {
@@ -288,6 +317,8 @@ pub struct SolverParameters {
     pub inverse_iteration_params: InverseIterationParameters,
     /// If true, print progress to stderr (overwrites same line with \r)
     pub output_log: bool,
+    /// Number of eigenstates to compute (1 = ground state only)
+    pub num_states: usize,
 }
 
 #[pymethods]
@@ -300,6 +331,7 @@ impl SolverParameters {
         num_threads: usize,
         inverse_iteration_params: InverseIterationParameters,
         output_log: bool,
+        num_states: usize,
     ) -> Self {
         Self {
             eigenvalue_tol,
@@ -308,6 +340,7 @@ impl SolverParameters {
             num_threads,
             inverse_iteration_params,
             output_log,
+            num_states,
         }
     }
 }

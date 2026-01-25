@@ -53,6 +53,7 @@ mod tests {
                 },
             },
             output_log: false,
+            num_states: 1,
         }
     }
 
@@ -85,17 +86,17 @@ mod tests {
         let params = make_solver_params();
         let mut result = solve_heisenberg(&model, 0.0, &params).unwrap(); // Sz=0 sector
 
-        assert_eq!(result.eigenvector.len(), 2); // |↑↓⟩, |↓↑⟩
+        assert_eq!(result.eigenvectors[0].len(), 2); // |↑↓⟩, |↓↑⟩
         assert!(
-            (result.energy - (-0.75)).abs() < TOL,
+            (result.energies[0] - (-0.75)).abs() < TOL,
             "Expected energy -0.75, got {}",
-            result.energy
+            result.energies[0]
         );
 
         // Eigenvector should be singlet: (|↑↓⟩ - |↓↑⟩)/√2 or its negative
         // |c0|^2 = |c1|^2 = 0.5, and c0 * c1 < 0
-        let c0 = result.eigenvector[0];
-        let c1 = result.eigenvector[1];
+        let c0 = result.eigenvectors[0][0];
+        let c1 = result.eigenvectors[0][1];
         assert!(
             (c0.abs() - 1.0 / 2.0_f64.sqrt()).abs() < TOL,
             "Expected |c0| = 1/√2, got {}",
@@ -116,21 +117,21 @@ mod tests {
         // Test expectation values: <Sz_i> = 0 in singlet state
         let sz_op = model.make_local_op_sz(0).unwrap();
         for site in 0..2 {
-            let sz = result.expectation_onsite(&sz_op, site, 1).unwrap();
+            let sz = result.expectation_onsite(&sz_op, site, 1, 0).unwrap();
             assert!(sz.abs() < TOL, "Expected <Sz_{}> = 0, got {}", site, sz);
         }
 
         // Test <Sx_i> = 0 (Sx takes states outside Sz=0 sector)
         let sx_op = model.make_local_op_sx(0).unwrap();
         for site in 0..2 {
-            let sx = result.expectation_onsite(&sx_op, site, 1).unwrap();
+            let sx = result.expectation_onsite(&sx_op, site, 1, 0).unwrap();
             assert!(sx.abs() < TOL, "Expected <Sx_{}> = 0, got {}", site, sx);
         }
 
         // Test <Sz_i^2> = 1/4 for S=1/2
         let szsz_op = csr_mul(1.0, &sz_op, 1.0, &sz_op).unwrap();
         for site in 0..2 {
-            let szsz = result.expectation_onsite(&szsz_op, site, 1).unwrap();
+            let szsz = result.expectation_onsite(&szsz_op, site, 1, 0).unwrap();
             assert!(
                 (szsz - 0.25).abs() < TOL,
                 "Expected <Sz_{}^2> = 0.25, got {}",
@@ -142,7 +143,7 @@ mod tests {
         // Test correlation functions
         // For singlet: <Sz_0 Sz_1> = -1/4
         let sz_corr = result
-            .correlation_function(&sz_op, 0, &sz_op, 1, 1)
+            .correlation_function(&sz_op, 0, &sz_op, 1, 1, 0)
             .unwrap();
         assert!(
             (sz_corr - (-0.25)).abs() < TOL,
@@ -154,7 +155,7 @@ mod tests {
         let sp_op = model.make_local_op_sp(0).unwrap();
         let sm_op = model.make_local_op_sm(0).unwrap();
         let sp_sm_corr = result
-            .correlation_function(&sp_op, 0, &sm_op, 1, 1)
+            .correlation_function(&sp_op, 0, &sm_op, 1, 1, 0)
             .unwrap();
         assert!(
             (sp_sm_corr - (-0.5)).abs() < TOL,
@@ -164,7 +165,7 @@ mod tests {
 
         // For singlet: <S-_0 S+_1> = -1/2
         let sm_sp_corr = result
-            .correlation_function(&sm_op, 0, &sp_op, 1, 1)
+            .correlation_function(&sm_op, 0, &sp_op, 1, 1, 0)
             .unwrap();
         assert!(
             (sm_sp_corr - (-0.5)).abs() < TOL,
@@ -175,7 +176,7 @@ mod tests {
         // Test Sx correlation: <Sx_0 Sx_1> = (1/4)(<S+_0 S-_1> + <S-_0 S+_1> + <S+_0 S+_1> + <S-_0 S-_1>)
         // = (1/4)(-0.5 + -0.5 + 0 + 0) = -0.25
         let sx_corr = result
-            .correlation_function(&sx_op, 0, &sx_op, 1, 1)
+            .correlation_function(&sx_op, 0, &sx_op, 1, 1, 0)
             .unwrap();
         assert!(
             (sx_corr - (-0.25)).abs() < TOL,
@@ -216,24 +217,24 @@ mod tests {
         let params = make_solver_params();
         let mut result = solve_heisenberg(&model, 0.0, &params).unwrap(); // Sz=0 sector
 
-        assert_eq!(result.eigenvector.len(), 3); // |+1,-1⟩, |0,0⟩, |-1,+1⟩
+        assert_eq!(result.eigenvectors[0].len(), 3); // |+1,-1⟩, |0,0⟩, |-1,+1⟩
         assert!(
-            (result.energy - (-2.0)).abs() < TOL,
+            (result.energies[0] - (-2.0)).abs() < TOL,
             "Expected energy -2.0, got {}",
-            result.energy
+            result.energies[0]
         );
 
         // Test expectation values: <Sz_i> = 0 in Sz=0 sector
         let sz_op = model.make_local_op_sz(0).unwrap();
         for site in 0..2 {
-            let sz = result.expectation_onsite(&sz_op, site, 1).unwrap();
+            let sz = result.expectation_onsite(&sz_op, site, 1, 0).unwrap();
             assert!(sz.abs() < TOL, "Expected <Sz_{}> = 0, got {}", site, sz);
         }
 
         // Test <Sx_i> = 0 (Sx takes states outside Sz=0 sector)
         let sx_op = model.make_local_op_sx(0).unwrap();
         for site in 0..2 {
-            let sx = result.expectation_onsite(&sx_op, site, 1).unwrap();
+            let sx = result.expectation_onsite(&sx_op, site, 1, 0).unwrap();
             assert!(sx.abs() < TOL, "Expected <Sx_{}> = 0, got {}", site, sx);
         }
 
@@ -242,7 +243,7 @@ mod tests {
         // <Sz_i^2> = (1/3)(1 + 0 + 1) = 2/3
         let szsz_op = csr_mul(1.0, &sz_op, 1.0, &sz_op).unwrap();
         for site in 0..2 {
-            let szsz = result.expectation_onsite(&szsz_op, site, 1).unwrap();
+            let szsz = result.expectation_onsite(&szsz_op, site, 1, 0).unwrap();
             assert!(
                 (szsz - 2.0 / 3.0).abs() < TOL,
                 "Expected <Sz_{}^2> = 2/3, got {}",

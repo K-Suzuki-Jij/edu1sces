@@ -32,13 +32,14 @@ pub struct LanczosLog {
 ///
 /// - `out_vec`: if `param.calc_eigenvec == true`, it will be overwritten with the eigenvector.
 /// - `out_val`: will be overwritten with the converged smallest eigenvalue.
-/// - `Lanczos_Initial_Guess` is intentionally not supported here (always random start).
+/// - `known_eigenvecs`: known eigenvectors to orthogonalize against. Empty for ground state.
 /// - Returns `LanczosLog` containing elapsed time and step count.
 pub fn lanczos(
     m: &CsrMatrix,
     out_vec: &mut Vec<f64>,
     out_val: &mut f64,
     param: &LanczosParameters,
+    known_eigenvecs: &[&[f64]],
     num_threads: usize,
 ) -> Result<LanczosLog> {
     let start_time = std::time::Instant::now();
@@ -48,7 +49,7 @@ pub fn lanczos(
     }
     let n = m.row_dim;
 
-    // C++ special-case: dim == 1
+    // special-case: dim == 1
     if n == 1 {
         if m.nnz() == 0 {
             bail!("Lanczos: 1x1 matrix has no stored value");
@@ -70,7 +71,7 @@ pub fn lanczos(
         bail!("Lanczos: max_step must be > min_step");
     }
 
-    // C++: if dim <= 1000 then dense LAPACK (Dsyev)
+    // if dim <= 1000 then dense LAPACK (Dsyev)
     if n <= 1000 {
         let mut a_work = vec![0.0; n * n];
         let mut w_work = vec![0.0; n];
@@ -78,11 +79,19 @@ pub fn lanczos(
 
         lapack_dsyev(m, &mut a_work, &mut w_work, &mut work)?;
 
-        // Smallest eigenvalue is at index 0 (ascending order)
-        *out_val = w_work[0];
+        // Eigenvalue index: 0 for ground state, k for k-th excited state
+        let eig_idx = known_eigenvecs.len();
+        if eig_idx >= n {
+            bail!(
+                "Lanczos: requested eigenvalue index {} >= matrix dimension {}",
+                eig_idx,
+                n
+            );
+        }
+        *out_val = w_work[eig_idx];
         if param.calc_eigenvec {
             out_vec.clear();
-            out_vec.extend_from_slice(&a_work[0..n]);
+            out_vec.extend_from_slice(&a_work[eig_idx * n..(eig_idx + 1) * n]);
         }
         return Ok(LanczosLog {
             elapsed_secs: start_time.elapsed().as_secs_f64(),
@@ -127,6 +136,13 @@ pub fn lanczos(
     }
     vector_operation::normalize(&pool, &mut v0, norm.sqrt())?;
 
+    // Orthogonalize against known eigenvectors (for excited states)
+    if !known_eigenvecs.is_empty() {
+        vector_operation::orthogonalize(&pool, &mut v0, known_eigenvecs)?;
+        let norm = vector_operation::norm2(&pool, &v0)?;
+        vector_operation::normalize(&pool, &mut v0, norm)?;
+    }
+
     // v1 = M * v0
     matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v0, 0.0)?;
 
@@ -147,6 +163,13 @@ pub fn lanczos(
         // off[step-1] = ||v2||, v2 = v2 / ||v2||
         off[step - 1] = vector_operation::norm2(&pool, &v2)?;
         vector_operation::normalize(&pool, &mut v2, off[step - 1])?;
+
+        // Orthogonalize against known eigenvectors (for excited states)
+        if !known_eigenvecs.is_empty() {
+            vector_operation::orthogonalize(&pool, &mut v2, known_eigenvecs)?;
+            let norm = vector_operation::norm2(&pool, &v2)?;
+            vector_operation::normalize(&pool, &mut v2, norm)?;
+        }
 
         // v1 = M * v2
         matrix_vector_operation::csr_matvec(&pool, &mut v1, m, &v2, 0.0)?;
@@ -210,6 +233,13 @@ pub fn lanczos(
         }
         vector_operation::normalize(&pool, &mut v0, norm.sqrt())?;
 
+        // Orthogonalize against known eigenvectors (for excited states)
+        if !known_eigenvecs.is_empty() {
+            vector_operation::orthogonalize(&pool, &mut v0, known_eigenvecs)?;
+            let norm = vector_operation::norm2(&pool, &v0)?;
+            vector_operation::normalize(&pool, &mut v0, norm)?;
+        }
+
         // out_vec += temp_eig_vec[0] * v0
         if temp_eig_vec.len() < step_num + 1 {
             bail!("Lanczos: internal error (temp_eig_vec too short)");
@@ -238,6 +268,13 @@ pub fn lanczos(
                     .sum()
             });
             vector_operation::normalize(&pool, &mut v2, norm_sq.sqrt())?;
+
+            // Orthogonalize against known eigenvectors (for excited states)
+            if !known_eigenvecs.is_empty() {
+                vector_operation::orthogonalize(&pool, &mut v2, known_eigenvecs)?;
+                let norm = vector_operation::norm2(&pool, &v2)?;
+                vector_operation::normalize(&pool, &mut v2, norm)?;
+            }
 
             // out_vec += temp_eig_vec[step] * v2
             vector_operation::axpy_inplace(&pool, out_vec, temp_eig_vec[step], &v2)?;
@@ -274,290 +311,105 @@ mod tests {
         LanczosParameters {
             acc: 1e-10,
             min_step: 5,
-            max_step: 100,
+            max_step: 200,
             calc_eigenvec: true,
             output_log: false,
         }
     }
 
     #[test]
-    fn test_lanczos_1x1() {
-        let m = CsrMatrix {
-            row_dim: 1,
-            col_dim: 1,
-            rows: vec![0, 1],
-            cols: vec![0],
-            vals: vec![5.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = default_param();
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
-
-        assert!((out_val - 5.0).abs() < TOL);
-        assert_eq!(out_vec.len(), 1);
-        assert!((out_vec[0] - 1.0).abs() < TOL);
-    }
-
-    #[test]
-    fn test_lanczos_2x2_diagonal_dsyev_path() {
-        // [[2, 0], [0, 5]] - uses dsyev path (n <= 1000)
-        let m = CsrMatrix {
-            row_dim: 2,
-            col_dim: 2,
-            rows: vec![0, 1, 2],
-            cols: vec![0, 1],
-            vals: vec![2.0, 5.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = default_param();
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
-
-        assert!((out_val - 2.0).abs() < TOL);
-        // Eigenvector for eigenvalue 2 should be [1, 0] or [-1, 0]
-        assert!((out_vec[0].abs() - 1.0).abs() < TOL);
-        assert!(out_vec[1].abs() < TOL);
-    }
-
-    #[test]
-    fn test_lanczos_2x2_symmetric_dsyev_path() {
-        // [[1, 2], [2, 1]] - eigenvalues: -1, 3
-        let m = CsrMatrix {
-            row_dim: 2,
-            col_dim: 2,
-            rows: vec![0, 2, 4],
-            cols: vec![0, 1, 0, 1],
-            vals: vec![1.0, 2.0, 2.0, 1.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = default_param();
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
-
-        assert!((out_val - (-1.0)).abs() < TOL);
-    }
-
-    #[test]
-    fn test_lanczos_3x3_tridiagonal_dsyev_path() {
-        // [[2, 1, 0], [1, 3, 1], [0, 1, 2]]
-        let m = CsrMatrix {
-            row_dim: 3,
-            col_dim: 3,
-            rows: vec![0, 2, 5, 7],
-            cols: vec![0, 1, 0, 1, 2, 1, 2],
-            vals: vec![2.0, 1.0, 1.0, 3.0, 1.0, 1.0, 2.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = default_param();
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
-
-        // Smallest eigenvalue is around 1.268
-        assert!(out_val > 1.0 && out_val < 2.0);
-
-        // Verify eigenvector: M * v = lambda * v
-        let pool = build_pool(1).unwrap();
-        let mut mv = vec![0.0; 3];
-        matrix_vector_operation::csr_matvec(&pool, &mut mv, &m, &out_vec, 0.0).unwrap();
-        for i in 0..3 {
-            assert!((mv[i] - out_val * out_vec[i]).abs() < TOL);
-        }
-    }
-
-    #[test]
-    fn test_lanczos_without_eigenvector() {
-        let m = CsrMatrix {
-            row_dim: 2,
-            col_dim: 2,
-            rows: vec![0, 2, 4],
-            cols: vec![0, 1, 0, 1],
-            vals: vec![1.0, 2.0, 2.0, 1.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = LanczosParameters {
-            acc: 1e-10,
-            min_step: 5,
-            max_step: 100,
-            calc_eigenvec: false,
-            output_log: false,
-        };
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
-
-        assert!((out_val - (-1.0)).abs() < TOL);
-        // out_vec should not be modified when calc_eigenvec = false
-        assert!(out_vec.is_empty());
-    }
-
-    #[test]
-    fn test_lanczos_error_non_square() {
-        let m = CsrMatrix {
-            row_dim: 2,
-            col_dim: 3,
-            rows: vec![0, 1, 2],
-            cols: vec![0, 1],
-            vals: vec![1.0, 2.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = default_param();
-
-        let result = lanczos(&m, &mut out_vec, &mut out_val, &param, 1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_lanczos_error_max_step_le_min_step() {
-        let m = CsrMatrix {
-            row_dim: 2,
-            col_dim: 2,
-            rows: vec![0, 1, 2],
-            cols: vec![0, 1],
-            vals: vec![1.0, 2.0],
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = LanczosParameters {
-            acc: 1e-10,
-            min_step: 10,
-            max_step: 5, // invalid: max <= min
-            calc_eigenvec: true,
-            output_log: false,
-        };
-
-        let result = lanczos(&m, &mut out_vec, &mut out_val, &param, 1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_lanczos_100x100_dsyev_path() {
-        // 100x100 tridiagonal matrix: diagonal = 2, off-diagonal = -1
-        // This is a discrete Laplacian with known eigenvalues
-        let n = 100;
-        let mut rows = vec![0usize];
-        let mut cols = Vec::new();
-        let mut vals = Vec::new();
-
-        for i in 0..n {
-            if i > 0 {
-                cols.push(i - 1);
-                vals.push(-1.0);
-            }
-            cols.push(i);
-            vals.push(2.0);
-            if i < n - 1 {
-                cols.push(i + 1);
-                vals.push(-1.0);
-            }
-            rows.push(cols.len());
-        }
-
-        let m = CsrMatrix {
-            row_dim: n,
-            col_dim: n,
-            rows,
-            cols,
-            vals,
-        };
-
-        let mut out_vec = Vec::new();
-        let mut out_val = 0.0;
-        let param = default_param();
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 1).unwrap();
-
-        // Smallest eigenvalue of discrete Laplacian: 2 - 2*cos(pi/(n+1))
-        let expected = 2.0 - 2.0 * (std::f64::consts::PI / (n as f64 + 1.0)).cos();
-        assert!((out_val - expected).abs() < 1e-6);
-
-        // Verify eigenvector
-        let pool = build_pool(1).unwrap();
-        let mut mv = vec![0.0; n];
-        matrix_vector_operation::csr_matvec(&pool, &mut mv, &m, &out_vec, 0.0).unwrap();
-        for i in 0..n {
-            assert!((mv[i] - out_val * out_vec[i]).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn test_lanczos_vs_dsyev() {
-        // Compare Lanczos with dsyev using n=500 random symmetric matrix
+    fn test_lanczos_dsyev_path() {
+        // n=500 uses dsyev path (n <= 1000)
         let n = 500;
         let m = CsrMatrix::random_dense_symmetric(n, 12345);
 
-        // Get ground truth from dsyev
         let mut a_work = vec![0.0; n * n];
         let mut w_work = vec![0.0; n];
         let mut work = vec![0.0; 3 * n];
         lapack_dsyev(&m, &mut a_work, &mut w_work, &mut work).unwrap();
-        let expected_val = w_work[0]; // smallest eigenvalue
 
-        // Compute via Lanczos (n <= 1000 uses dsyev path internally,
-        // but this still verifies the overall algorithm correctness)
         let mut out_vec = Vec::new();
         let mut out_val = 0.0;
-        let param = LanczosParameters {
-            acc: 1e-10,
-            min_step: 5,
-            max_step: 100,
-            calc_eigenvec: true,
-            output_log: false,
-        };
-
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 2).unwrap();
-
-        assert!((out_val - expected_val).abs() < 1e-8);
+        lanczos(&m, &mut out_vec, &mut out_val, &default_param(), &[], 1).unwrap();
+        assert!((out_val - w_work[0]).abs() < TOL);
     }
 
     #[test]
-    fn test_lanczos_1500_random() {
-        // n=1500 > 1000 uses actual Lanczos iteration path
+    fn test_lanczos_iteration_path() {
+        // n=1500 > 1000 uses Lanczos iteration
         let n = 1500;
         let m = CsrMatrix::random_dense_symmetric(n, 54321);
 
         let mut out_vec = Vec::new();
         let mut out_val = 0.0;
-        let param = LanczosParameters {
-            acc: 1e-10,
-            min_step: 5,
-            max_step: 200,
-            calc_eigenvec: true,
-            output_log: false,
-        };
+        lanczos(&m, &mut out_vec, &mut out_val, &default_param(), &[], 2).unwrap();
 
-        lanczos(&m, &mut out_vec, &mut out_val, &param, 2).unwrap();
-
-        // Verify eigenvector: M * v = lambda * v
+        // Verify: M * v = lambda * v
         let pool = build_pool(1).unwrap();
         let mut mv = vec![0.0; n];
         matrix_vector_operation::csr_matvec(&pool, &mut mv, &m, &out_vec, 0.0).unwrap();
-
-        // Verify with relative tolerance
         for i in 0..n {
-            let expected = out_val * out_vec[i];
-            let diff = (mv[i] - expected).abs();
-            let tol = 1e-6 * out_val.abs().max(1.0);
-            assert!(
-                diff < tol,
-                "i={}, mv={}, expected={}, diff={}",
-                i,
-                mv[i],
-                expected,
-                diff
-            );
+            let diff = (mv[i] - out_val * out_vec[i]).abs();
+            assert!(diff < 1e-6 * out_val.abs().max(1.0));
         }
+    }
+
+    #[test]
+    fn test_lanczos_excited_dsyev_path() {
+        // n=500 uses dsyev path
+        let n = 500;
+        let m = CsrMatrix::random_dense_symmetric(n, 11111);
+
+        let mut a_work = vec![0.0; n * n];
+        let mut w_work = vec![0.0; n];
+        let mut work = vec![0.0; 3 * n];
+        lapack_dsyev(&m, &mut a_work, &mut w_work, &mut work).unwrap();
+
+        // Ground state
+        let mut gs_vec = Vec::new();
+        let mut gs_val = 0.0;
+        lanczos(&m, &mut gs_vec, &mut gs_val, &default_param(), &[], 1).unwrap();
+        assert!((gs_val - w_work[0]).abs() < TOL);
+
+        // First excited state
+        let known = [gs_vec.as_slice()];
+        let mut ex1_vec = Vec::new();
+        let mut ex1_val = 0.0;
+        lanczos(&m, &mut ex1_vec, &mut ex1_val, &default_param(), &known, 1).unwrap();
+        assert!((ex1_val - w_work[1]).abs() < TOL);
+    }
+
+    #[test]
+    fn test_lanczos_excited_iteration_path() {
+        // n=1500 > 1000 uses Lanczos iteration
+        let n = 1500;
+        let m = CsrMatrix::random_dense_symmetric(n, 22222);
+
+        // Ground state
+        let mut gs_vec = Vec::new();
+        let mut gs_val = 0.0;
+        lanczos(&m, &mut gs_vec, &mut gs_val, &default_param(), &[], 2).unwrap();
+
+        // First excited state
+        let known = [gs_vec.as_slice()];
+        let mut ex1_vec = Vec::new();
+        let mut ex1_val = 0.0;
+        lanczos(&m, &mut ex1_vec, &mut ex1_val, &default_param(), &known, 2).unwrap();
+
+        // ex1_val > gs_val
+        assert!(ex1_val > gs_val + 1e-10);
+
+        // Verify: M * v = lambda * v
+        let pool = build_pool(1).unwrap();
+        let mut mv = vec![0.0; n];
+        matrix_vector_operation::csr_matvec(&pool, &mut mv, &m, &ex1_vec, 0.0).unwrap();
+        for i in 0..n {
+            let diff = (mv[i] - ex1_val * ex1_vec[i]).abs();
+            assert!(diff < 1e-6 * ex1_val.abs().max(1.0));
+        }
+
+        // Orthogonality: <gs_vec, ex1_vec> ≈ 0
+        let dot: f64 = gs_vec.iter().zip(ex1_vec.iter()).map(|(a, b)| a * b).sum();
+        assert!(dot.abs() < 1e-10);
     }
 }

@@ -55,6 +55,7 @@ class SolverParameters:
     """Parameters for the eigenvalue solver.
 
     Args:
+        num_states: Number of eigenstates to compute (1 = ground state only).
         eigenvalue_tol: Convergence threshold for eigenvalue (Lanczos).
         min_step: Minimum Lanczos iterations.
         max_step: Maximum Lanczos iterations.
@@ -63,6 +64,7 @@ class SolverParameters:
         output_log: If True, print progress to stdout with real-time updates.
     """
 
+    num_states: int
     eigenvalue_tol: float = 1e-14
     min_step: int = 5
     max_step: int = 1000
@@ -81,6 +83,8 @@ class SolverParameters:
             raise ValueError("max_step must be >= min_step")
         if self.num_threads <= 0:
             raise ValueError("num_threads must be positive")
+        if self.num_states <= 0:
+            raise ValueError("num_states must be positive")
 
         if self.inverse_iteration_params is None:
             self.inverse_iteration_params = InverseIterationParameters()
@@ -106,4 +110,5 @@ class SolverParameters:
             self.num_threads,
             inv_core,
             self.output_log,
+            self.num_states,
         )

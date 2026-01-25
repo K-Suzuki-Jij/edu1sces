@@ -61,6 +61,9 @@ htmlcov/
 # Misc
 .DS_Store
 
+# Claude Code
+CLAUDE.md
+
 
 # Added by cargo
 

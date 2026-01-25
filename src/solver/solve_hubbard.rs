@@ -54,6 +54,7 @@ mod tests {
                 },
             },
             output_log: false,
+            num_states: 1,
         }
     }
 
@@ -83,16 +84,16 @@ mod tests {
         let params = make_solver_params();
         let mut result = solve_hubbard(&model, 1, 0.5, &params).unwrap();
 
-        assert_eq!(result.eigenvector.len(), 2);
+        assert_eq!(result.eigenvectors[0].len(), 2);
         assert!(
-            (result.energy - (-1.0)).abs() < TOL,
+            (result.energies[0] - (-1.0)).abs() < TOL,
             "Expected energy -1.0, got {}",
-            result.energy
+            result.energies[0]
         );
 
         // Eigenvector should be (|up,vac> + |vac,up>)/√2 or its negative
-        let c0 = result.eigenvector[0];
-        let c1 = result.eigenvector[1];
+        let c0 = result.eigenvectors[0][0];
+        let c1 = result.eigenvectors[0][1];
         assert!(
             (c0.abs() - 1.0 / 2.0_f64.sqrt()).abs() < TOL,
             "Expected |c0| = 1/√2, got {}",
@@ -116,7 +117,7 @@ mod tests {
         // <n_i> = 0.5 (probability 0.5 on each site)
         let n_op = model.make_local_op_n().unwrap();
         for site in 0..2 {
-            let n = result.expectation_onsite(&n_op, site, 1).unwrap();
+            let n = result.expectation_onsite(&n_op, site, 1, 0).unwrap();
             assert!(
                 (n - 0.5).abs() < TOL,
                 "Expected <n_{}> = 0.5, got {}",
@@ -128,7 +129,7 @@ mod tests {
         // <sz_i> = 0.25 (spin-up electron with probability 0.5 at each site)
         let sz_op = model.make_local_op_sz().unwrap();
         for site in 0..2 {
-            let sz = result.expectation_onsite(&sz_op, site, 1).unwrap();
+            let sz = result.expectation_onsite(&sz_op, site, 1, 0).unwrap();
             assert!(
                 (sz - 0.25).abs() < TOL,
                 "Expected <sz_{}> = 0.25, got {}",
@@ -163,11 +164,11 @@ mod tests {
         let params = make_solver_params();
         let mut result = solve_hubbard(&model, 2, 0.0, &params).unwrap();
 
-        assert_eq!(result.eigenvector.len(), 4);
+        assert_eq!(result.eigenvectors[0].len(), 4);
         assert!(
-            (result.energy - (-2.0)).abs() < TOL,
+            (result.energies[0] - (-2.0)).abs() < TOL,
             "Expected energy -2.0, got {}",
-            result.energy
+            result.energies[0]
         );
 
         // Test expectation values
@@ -175,7 +176,7 @@ mod tests {
         // <n_i> = 1.0 (average 1 electron per site)
         let n_op = model.make_local_op_n().unwrap();
         for site in 0..2 {
-            let n = result.expectation_onsite(&n_op, site, 1).unwrap();
+            let n = result.expectation_onsite(&n_op, site, 1, 0).unwrap();
             assert!(
                 (n - 1.0).abs() < TOL,
                 "Expected <n_{}> = 1.0, got {}",
@@ -187,7 +188,7 @@ mod tests {
         // <sz_i> = 0 in Sz=0 sector
         let sz_op = model.make_local_op_sz().unwrap();
         for site in 0..2 {
-            let sz = result.expectation_onsite(&sz_op, site, 1).unwrap();
+            let sz = result.expectation_onsite(&sz_op, site, 1, 0).unwrap();
             assert!(sz.abs() < TOL, "Expected <sz_{}> = 0, got {}", site, sz);
         }
     }
@@ -219,7 +220,7 @@ mod tests {
         let params = make_solver_params();
         let result = solve_hubbard(&model, 2, 0.0, &params).unwrap();
 
-        assert_eq!(result.eigenvector.len(), 4);
+        assert_eq!(result.eigenvectors[0].len(), 4);
 
         // Expected energy: E = U/2 - sqrt((U/2)^2 + 4t^2)
         let u: f64 = 100.0;
@@ -227,10 +228,10 @@ mod tests {
         let expected_energy = u / 2.0 - ((u / 2.0).powi(2) + 4.0 * t.powi(2)).sqrt();
 
         assert!(
-            (result.energy - expected_energy).abs() < TOL,
+            (result.energies[0] - expected_energy).abs() < TOL,
             "Expected energy {}, got {}",
             expected_energy,
-            result.energy
+            result.energies[0]
         );
     }
 
@@ -262,17 +263,17 @@ mod tests {
         let params = make_solver_params();
         let mut result = solve_hubbard(&model, 4, 0.0, &params).unwrap();
 
-        assert_eq!(result.eigenvector.len(), 36);
+        assert_eq!(result.eigenvectors[0].len(), 36);
 
         // Energy should be negative (attractive correlations)
         assert!(
-            result.energy < 0.0,
+            result.energies[0] < 0.0,
             "Expected negative energy, got {}",
-            result.energy
+            result.energies[0]
         );
 
         // Eigenvector should be normalized
-        let norm_sq: f64 = result.eigenvector.iter().map(|x| x * x).sum();
+        let norm_sq: f64 = result.eigenvectors[0].iter().map(|x| x * x).sum();
         assert!(
             (norm_sq - 1.0).abs() < TOL,
             "Expected normalized eigenvector, got norm^2 = {}",
@@ -284,7 +285,7 @@ mod tests {
         // <n_i> = 1.0 (1 electron per site on average)
         let n_op = model.make_local_op_n().unwrap();
         for site in 0..4 {
-            let n = result.expectation_onsite(&n_op, site, 1).unwrap();
+            let n = result.expectation_onsite(&n_op, site, 1, 0).unwrap();
             assert!(
                 (n - 1.0).abs() < TOL,
                 "Expected <n_{}> = 1.0, got {}",
@@ -296,7 +297,7 @@ mod tests {
         // <sz_i> = 0 in Sz=0 sector (by symmetry)
         let sz_op = model.make_local_op_sz().unwrap();
         for site in 0..4 {
-            let sz = result.expectation_onsite(&sz_op, site, 1).unwrap();
+            let sz = result.expectation_onsite(&sz_op, site, 1, 0).unwrap();
             assert!(sz.abs() < TOL, "Expected <sz_{}> = 0, got {}", site, sz);
         }
     }

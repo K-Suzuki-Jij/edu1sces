@@ -9,10 +9,10 @@ class SolverResult:
     for computing expectation values.
 
     Attributes:
-        energy: Ground state energy.
-        eigenvector: Ground state eigenvector.
-        lanczos_log: Lanczos solver log.
-        inverse_iteration_log: Inverse iteration solver log.
+        energies: Eigenvalues (energies) for each computed state.
+        eigenvectors: Eigenvectors for each computed state.
+        lanczos_logs: Lanczos solver logs for each state.
+        inverse_iteration_logs: Inverse iteration solver logs for each state.
     """
 
     def __init__(
@@ -26,29 +26,35 @@ class SolverResult:
         self._default_num_threads = default_num_threads
 
     @property
-    def energy(self) -> float:
-        """Ground state energy."""
-        return self._core_result.energy
+    def energies(self) -> list[float]:
+        """Eigenvalues (energies) for each computed state."""
+        return self._core_result.energies
 
     @property
-    def eigenvector(self) -> list[float]:
-        """Ground state eigenvector."""
-        return self._core_result.eigenvector
+    def eigenvectors(self) -> list[list[float]]:
+        """Eigenvectors for each computed state."""
+        return self._core_result.eigenvectors
 
     @property
-    def lanczos_log(self) -> edu1sces.core.LanczosLog:
-        """Lanczos solver log."""
-        return self._core_result.lanczos_log
+    def lanczos_logs(self) -> list[edu1sces.core.LanczosLog]:
+        """Lanczos solver logs for each state."""
+        return self._core_result.lanczos_logs
 
     @property
-    def inverse_iteration_log(self) -> edu1sces.core.InverseIterationLog:
-        """Inverse iteration solver log."""
-        return self._core_result.inverse_iteration_log
+    def inverse_iteration_logs(self) -> list[edu1sces.core.InverseIterationLog]:
+        """Inverse iteration solver logs for each state."""
+        return self._core_result.inverse_iteration_logs
+
+    @property
+    def num_states(self) -> int:
+        """Number of computed eigenstates."""
+        return len(self._core_result.energies)
 
     def expectation_onsite(
         self,
         local_op: edu1sces.core.CsrMatrix,
         site: Site,
+        state_index: int,
         *,
         num_threads: int | None = None,
     ) -> float:
@@ -59,13 +65,16 @@ class SolverResult:
             site: Site for which to compute the expectation value.
             num_threads: Number of threads for parallel computation.
                 If None, uses the value from SolverParameters.
+            state_index: Index of the eigenstate (0 = ground state).
 
         Returns:
             Expectation value <psi| O_site |psi>.
         """
         site_index = self._site_to_integer[site]
         threads = num_threads if num_threads is not None else self._default_num_threads
-        return self._core_result.expectation_onsite(local_op, site_index, threads)
+        return self._core_result.expectation_onsite(
+            local_op, site_index, threads, state_index
+        )
 
     def correlation_function(
         self,
@@ -73,6 +82,7 @@ class SolverResult:
         site1: Site,
         op2: edu1sces.core.CsrMatrix,
         site2: Site,
+        state_index: int,
         *,
         num_threads: int | None = None,
     ) -> float:
@@ -88,6 +98,7 @@ class SolverResult:
             site2: Site index for operator 2.
             num_threads: Number of threads for parallel computation.
                 If None, uses the value from SolverParameters.
+            state_index: Index of the eigenstate (0 = ground state).
 
         Returns:
             Correlation value <psi|O1_{site1} O2_{site2}|psi>.
@@ -96,5 +107,5 @@ class SolverResult:
         site2_index = self._site_to_integer[site2]
         threads = num_threads if num_threads is not None else self._default_num_threads
         return self._core_result.correlation_function(
-            op1, site1_index, op2, site2_index, threads
+            op1, site1_index, op2, site2_index, threads, state_index
         )
