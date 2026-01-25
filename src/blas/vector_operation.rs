@@ -182,6 +182,35 @@ pub fn normalize(pool: &ThreadPool, x: &mut [f64], norm: f64) -> Result<()> {
     Ok(())
 }
 
+/// Orthogonalize v against a set of known eigenvectors.
+/// v = v - Σ_i <v, eigvec_i> * eigvec_i
+/// Note: This does NOT normalize v. Call normalize separately if needed.
+pub fn orthogonalize(pool: &ThreadPool, v: &mut [f64], known_eigenvecs: &[&[f64]]) -> Result<()> {
+    if known_eigenvecs.is_empty() {
+        return Ok(());
+    }
+
+    // Compute all coefficients first
+    let mut coeffs = Vec::with_capacity(known_eigenvecs.len());
+    for eigvec in known_eigenvecs {
+        if v.len() != eigvec.len() {
+            bail!("dimension mismatch: v.len() != eigvec.len()");
+        }
+        coeffs.push(dot(pool, v, eigvec)?);
+    }
+
+    // Subtract all projections in one loop
+    pool.install(|| {
+        v.par_iter_mut().enumerate().for_each(|(i, vi)| {
+            for (eigvec, &coeff) in known_eigenvecs.iter().zip(coeffs.iter()) {
+                *vi -= coeff * eigvec[i];
+            }
+        });
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +434,47 @@ mod tests {
         // sum of i * (n - i) for i = 0 to n-1
         let expected: f64 = (0..n).map(|i| (i * (n - i)) as f64).sum();
         assert_approx_eq(result, expected);
+    }
+
+    #[test]
+    fn test_orthogonalize_single() {
+        let pool = build_pool(2).unwrap();
+        // v = [1, 1, 0], eigvec = [1, 0, 0] (normalized)
+        let mut v = vec![1.0, 1.0, 0.0];
+        let eigvec = vec![1.0, 0.0, 0.0];
+        orthogonalize(&pool, &mut v, &[eigvec.as_slice()]).unwrap();
+        // v = [1, 1, 0] - 1 * [1, 0, 0] = [0, 1, 0]
+        assert_vec_approx_eq(&v, &vec![0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_orthogonalize_multiple() {
+        let pool = build_pool(2).unwrap();
+        // v = [1, 1, 1], eigvecs = [[1, 0, 0], [0, 1, 0]]
+        let mut v = vec![1.0, 1.0, 1.0];
+        let e1 = vec![1.0, 0.0, 0.0];
+        let e2 = vec![0.0, 1.0, 0.0];
+        orthogonalize(&pool, &mut v, &[e1.as_slice(), e2.as_slice()]).unwrap();
+        // v = [1, 1, 1] - 1*[1, 0, 0] - 1*[0, 1, 0] = [0, 0, 1]
+        assert_vec_approx_eq(&v, &vec![0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_orthogonalize_empty() {
+        let pool = build_pool(2).unwrap();
+        let mut v = vec![1.0, 2.0, 3.0];
+        let empty: Vec<&[f64]> = vec![];
+        orthogonalize(&pool, &mut v, &empty).unwrap();
+        // v unchanged
+        assert_vec_approx_eq(&v, &vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_orthogonalize_dimension_mismatch() {
+        let pool = build_pool(2).unwrap();
+        let mut v = vec![1.0, 2.0];
+        let eigvec = vec![1.0, 0.0, 0.0];
+        let result = orthogonalize(&pool, &mut v, &[eigvec.as_slice()]);
+        assert!(result.is_err());
     }
 }

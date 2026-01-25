@@ -7,7 +7,7 @@ use crate::model::QuantumModel;
 use crate::solver::{BasisInfo, SolverParameters, SolverResult};
 use crate::utility::py_log::py_print_flush;
 
-/// Solve a quantum model to find the ground state.
+/// Solve a quantum model to find eigenstates.
 pub fn solve_model<M, MakeHam>(
     model: M,
     make_hamiltonian: MakeHam,
@@ -20,6 +20,11 @@ where
 {
     let output_log = params.output_log;
     let num_threads = params.num_threads;
+    let num_states = params.num_states;
+
+    if num_states == 0 {
+        anyhow::bail!("num_states must be at least 1");
+    }
 
     // Build basis
     if output_log {
@@ -58,46 +63,72 @@ where
         output_log,
     };
 
-    // Run Lanczos
-    if output_log {
-        py_print_flush("Diagonalizing Hamiltonian...\n");
-    }
-    let lanczos_start = std::time::Instant::now();
-    let mut eigenvector = Vec::new();
-    let mut energy = 0.0;
-    let lanczos_log = lanczos(
-        &hamiltonian,
-        &mut eigenvector,
-        &mut energy,
-        &lanczos_params,
-        num_threads,
-    )?;
-    if output_log {
-        py_print_flush(&format!(
-            "\rDone in {:.1}s ({} threads)                      \n",
-            lanczos_start.elapsed().as_secs_f64(),
-            num_threads
-        ));
-    }
+    let mut energies = Vec::with_capacity(num_states);
+    let mut eigenvectors: Vec<Vec<f64>> = Vec::with_capacity(num_states);
+    let mut lanczos_logs = Vec::with_capacity(num_states);
+    let mut inverse_iteration_logs = Vec::with_capacity(num_states);
 
-    // Refine eigenvector using inverse iteration
-    if output_log {
-        py_print_flush("Improving eigenvector...\n");
-    }
-    let inv_start = std::time::Instant::now();
-    let inverse_iteration_log = inverse_iteration(
-        &hamiltonian,
-        &mut eigenvector,
-        energy,
-        &params.inverse_iteration_params,
-        num_threads,
-    )?;
-    if output_log {
-        py_print_flush(&format!(
-            "\rDone in {:.1}s ({} threads)                      \n",
-            inv_start.elapsed().as_secs_f64(),
-            num_threads
-        ));
+    // Compute each eigenstate
+    for state_idx in 0..num_states {
+        if output_log {
+            if state_idx == 0 {
+                py_print_flush("Diagonalizing Hamiltonian (ground state)...\n");
+            } else {
+                py_print_flush(&format!(
+                    "Diagonalizing Hamiltonian (excited state {})...\n",
+                    state_idx
+                ));
+            }
+        }
+
+        let lanczos_start = std::time::Instant::now();
+        let mut eigenvector = Vec::new();
+        let mut energy = 0.0;
+
+        // Build known_eigenvecs from previous eigenvectors
+        let known_eigenvecs: Vec<&[f64]> = eigenvectors.iter().map(|v| v.as_slice()).collect();
+
+        let lanczos_log = lanczos(
+            &hamiltonian,
+            &mut eigenvector,
+            &mut energy,
+            &lanczos_params,
+            &known_eigenvecs,
+            num_threads,
+        )?;
+
+        if output_log {
+            py_print_flush(&format!(
+                "\rDone in {:.1}s ({} threads)                      \n",
+                lanczos_start.elapsed().as_secs_f64(),
+                num_threads
+            ));
+        }
+
+        // Refine eigenvector using inverse iteration
+        if output_log {
+            py_print_flush("Improving eigenvector...\n");
+        }
+        let inv_start = std::time::Instant::now();
+        let inverse_iteration_log = inverse_iteration(
+            &hamiltonian,
+            &mut eigenvector,
+            energy,
+            &params.inverse_iteration_params,
+            num_threads,
+        )?;
+        if output_log {
+            py_print_flush(&format!(
+                "\rDone in {:.1}s ({} threads)                      \n",
+                inv_start.elapsed().as_secs_f64(),
+                num_threads
+            ));
+        }
+
+        energies.push(energy);
+        eigenvectors.push(eigenvector);
+        lanczos_logs.push(lanczos_log);
+        inverse_iteration_logs.push(inverse_iteration_log);
     }
 
     // Extract basis info
@@ -122,10 +153,10 @@ where
     };
 
     Ok(SolverResult {
-        energy,
-        eigenvector,
+        energies,
+        eigenvectors,
         basis_info,
-        lanczos_log,
-        inverse_iteration_log,
+        lanczos_logs,
+        inverse_iteration_logs,
     })
 }

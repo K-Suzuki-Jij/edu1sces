@@ -22,6 +22,7 @@ fn make_solver_params(num_threads: usize) -> SolverParameters {
             },
         },
         output_log: false,
+        num_states: 1,
     }
 }
 
@@ -43,22 +44,22 @@ where
 
         let result = result.unwrap();
         let final_residual = result
-            .inverse_iteration_log
+            .inverse_iteration_logs[0]
             .residual_errors
             .last()
             .copied()
-            .unwrap_or(result.inverse_iteration_log.initial_residual_error);
+            .unwrap_or(result.inverse_iteration_logs[0].initial_residual_error);
 
         if let Some(base) = baseline_time_ms {
             let speedup = base / avg_time_ms;
             println!(
                 "  threads={:2}, avg_time={:8.2}ms, speedup={:.2}x, energy={:.15}, residual={:.2e}",
-                threads, avg_time_ms, speedup, result.energy, final_residual
+                threads, avg_time_ms, speedup, result.energies[0], final_residual
             );
         } else {
             println!(
                 "  threads={:2}, avg_time={:8.2}ms, energy={:.15}, residual={:.2e}",
-                threads, avg_time_ms, result.energy, final_residual
+                threads, avg_time_ms, result.energies[0], final_residual
             );
             baseline_time_ms = Some(avg_time_ms);
         }

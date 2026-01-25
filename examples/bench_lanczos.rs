@@ -28,6 +28,7 @@ fn benchmark_lanczos(
             &mut eigenvector,
             &mut energy,
             &lanczos_params,
+            &[],
             num_threads,
         );
     }
@@ -42,6 +43,7 @@ fn benchmark_lanczos(
             &mut eigenvector,
             &mut energy,
             &lanczos_params,
+            &[],
             num_threads,
         )
         .unwrap();

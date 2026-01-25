@@ -54,6 +54,7 @@ mod tests {
                 },
             },
             output_log: false,
+            num_states: 1,
         }
     }
 
@@ -95,19 +96,19 @@ mod tests {
         let params = make_solver_params();
         let result = solve_kondo_lattice(&model, 1, 0.0, &params).unwrap();
 
-        assert_eq!(result.eigenvector.len(), 2);
+        assert_eq!(result.eigenvectors[0].len(), 2);
 
         let expected_energy = -3.0 * j / 4.0;
         assert!(
-            (result.energy - expected_energy).abs() < TOL,
+            (result.energies[0] - expected_energy).abs() < TOL,
             "Expected energy {}, got {}",
             expected_energy,
-            result.energy
+            result.energies[0]
         );
 
         // Eigenvector should be (|+1/2>|down> - |-1/2>|up>)/√2 for singlet
-        let c0 = result.eigenvector[0];
-        let c1 = result.eigenvector[1];
+        let c0 = result.eigenvectors[0][0];
+        let c1 = result.eigenvectors[0][1];
         assert!(
             (c0.abs() - 1.0 / 2.0_f64.sqrt()).abs() < TOL,
             "Expected |c0| = 1/√2, got {}",
@@ -145,9 +146,9 @@ mod tests {
 
         // Ground state energy should be -2t = -2.0 (both electrons in bonding state)
         assert!(
-            (result.energy - (-2.0)).abs() < TOL,
+            (result.energies[0] - (-2.0)).abs() < TOL,
             "Expected energy -2.0, got {}",
-            result.energy
+            result.energies[0]
         );
     }
 
@@ -169,14 +170,14 @@ mod tests {
         let params = make_solver_params();
         let result = solve_kondo_lattice(&model, 0, 0.0, &params).unwrap();
 
-        assert_eq!(result.eigenvector.len(), 2);
+        assert_eq!(result.eigenvectors[0].len(), 2);
 
         let expected_energy = -3.0 * j / 4.0;
         assert!(
-            (result.energy - expected_energy).abs() < TOL,
+            (result.energies[0] - expected_energy).abs() < TOL,
             "Expected energy {}, got {}",
             expected_energy,
-            result.energy
+            result.energies[0]
         );
     }
 
@@ -197,13 +198,13 @@ mod tests {
 
         // Energy should be negative
         assert!(
-            result.energy < 0.0,
+            result.energies[0] < 0.0,
             "Expected negative energy, got {}",
-            result.energy
+            result.energies[0]
         );
 
         // Eigenvector should be normalized
-        let norm_sq: f64 = result.eigenvector.iter().map(|x| x * x).sum();
+        let norm_sq: f64 = result.eigenvectors[0].iter().map(|x| x * x).sum();
         assert!(
             (norm_sq - 1.0).abs() < TOL,
             "Expected normalized eigenvector, got norm^2 = {}",
