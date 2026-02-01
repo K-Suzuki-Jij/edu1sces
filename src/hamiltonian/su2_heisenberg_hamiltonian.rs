@@ -1316,4 +1316,209 @@ mod tests {
             su2_gs
         );
     }
+
+    fn get_all_eigenvalues(h: &CsrMatrix) -> Vec<f64> {
+        let n = h.row_dim;
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut a_work = vec![0.0; n * n];
+        let mut w_work = vec![0.0; n];
+        let mut work = vec![0.0; 3 * n];
+        lapack_dsyev(h, &mut a_work, &mut w_work, &mut work).unwrap();
+        w_work
+    }
+
+    #[test]
+    fn compare_all_eigenvalues_six_sites_spin_half() {
+        let n = 6;
+        let spin = 0.5;
+        let two_s = 1;
+
+        // Long-range interactions with various coupling strengths
+        let pairs = [
+            ((0, 1), 1.0),
+            ((1, 2), 0.9),
+            ((2, 3), 1.1),
+            ((3, 4), 0.8),
+            ((4, 5), 1.2),
+            ((0, 2), 0.5),
+            ((1, 3), 0.4),
+            ((2, 4), 0.6),
+            ((3, 5), 0.5),
+            ((0, 3), 0.3),
+            ((1, 4), 0.35),
+            ((2, 5), 0.25),
+            ((0, 4), 0.2),
+            ((1, 5), 0.15),
+            ((0, 5), 0.1),
+        ];
+
+        let mut exchange_su2 = HashMap::new();
+        let mut exchange_xy = HashMap::new();
+        let mut exchange_z = HashMap::new();
+        for ((i, j), val) in pairs {
+            exchange_su2.insert((i, j), val);
+            exchange_xy.insert((i, j), val);
+            exchange_z.insert((i, j), val);
+        }
+
+        let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
+        let u1_model = HeisenbergModel {
+            num_sites: n,
+            two_s_list: vec![two_s; n],
+            hz_list: vec![0.0; n],
+            d_list: vec![0.0; n],
+            exchange_xy,
+            exchange_z,
+        };
+
+        // U(1): Collect all eigenvalues from all Sz sectors
+        let mut u1_all_eigs = Vec::new();
+        for sz2 in (-(n as i32)..=(n as i32)).step_by(2) {
+            let basis = u1_model.build_basis(&[sz2]).unwrap();
+            if basis.dim() == 0 {
+                continue;
+            }
+            let ham = make_heisenberg_hamiltonian(&basis, &u1_model, 1).unwrap();
+            u1_all_eigs.extend(get_all_eigenvalues(&ham));
+        }
+
+        // SU(2): Collect all eigenvalues from all S sectors (with degeneracy 2S+1)
+        let mut su2_all_eigs = Vec::new();
+        for s2 in (0..=(n as i32)).step_by(2) {
+            let s = s2 as f64 / 2.0;
+            let basis = su2_model.build_basis(s).unwrap();
+            if basis.dim() == 0 {
+                continue;
+            }
+            let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
+            let eigs = get_all_eigenvalues(&ham);
+            let degeneracy = (s2 + 1) as usize; // 2S+1
+            for e in eigs {
+                for _ in 0..degeneracy {
+                    su2_all_eigs.push(e);
+                }
+            }
+        }
+
+        // Sort and compare
+        u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        assert_eq!(
+            u1_all_eigs.len(),
+            su2_all_eigs.len(),
+            "Eigenvalue count mismatch: U(1)={}, SU(2)={}",
+            u1_all_eigs.len(),
+            su2_all_eigs.len()
+        );
+
+        for (i, (u1_e, su2_e)) in u1_all_eigs.iter().zip(&su2_all_eigs).enumerate() {
+            assert!(
+                (u1_e - su2_e).abs() < 1e-8,
+                "Eigenvalue {} mismatch: U(1)={}, SU(2)={}",
+                i,
+                u1_e,
+                su2_e
+            );
+        }
+    }
+
+    #[test]
+    fn compare_all_eigenvalues_six_sites_spin_one() {
+        let n = 6;
+        let spin = 1.0;
+        let two_s = 2;
+
+        // Long-range interactions with various coupling strengths
+        let pairs = [
+            ((0, 1), 1.0),
+            ((1, 2), 0.9),
+            ((2, 3), 1.1),
+            ((3, 4), 0.8),
+            ((4, 5), 1.2),
+            ((0, 2), 0.5),
+            ((1, 3), 0.4),
+            ((2, 4), 0.6),
+            ((3, 5), 0.5),
+            ((0, 3), 0.3),
+            ((1, 4), 0.35),
+            ((2, 5), 0.25),
+            ((0, 4), 0.2),
+            ((1, 5), 0.15),
+            ((0, 5), 0.1),
+        ];
+
+        let mut exchange_su2 = HashMap::new();
+        let mut exchange_xy = HashMap::new();
+        let mut exchange_z = HashMap::new();
+        for ((i, j), val) in pairs {
+            exchange_su2.insert((i, j), val);
+            exchange_xy.insert((i, j), val);
+            exchange_z.insert((i, j), val);
+        }
+
+        let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
+        let u1_model = HeisenbergModel {
+            num_sites: n,
+            two_s_list: vec![two_s; n],
+            hz_list: vec![0.0; n],
+            d_list: vec![0.0; n],
+            exchange_xy,
+            exchange_z,
+        };
+
+        // U(1): Collect all eigenvalues from all Sz sectors
+        let mut u1_all_eigs = Vec::new();
+        for sz2 in (-(n as i32 * two_s)..=(n as i32 * two_s)).step_by(2) {
+            let basis = u1_model.build_basis(&[sz2]).unwrap();
+            if basis.dim() == 0 {
+                continue;
+            }
+            let ham = make_heisenberg_hamiltonian(&basis, &u1_model, 1).unwrap();
+            u1_all_eigs.extend(get_all_eigenvalues(&ham));
+        }
+
+        // SU(2): Collect all eigenvalues from all S sectors (with degeneracy 2S+1)
+        let mut su2_all_eigs = Vec::new();
+        let max_s2 = n as i32 * two_s; // Maximum 2*S = n * 2*s
+        for s2 in (0..=max_s2).step_by(2) {
+            let s = s2 as f64 / 2.0;
+            let basis = su2_model.build_basis(s).unwrap();
+            if basis.dim() == 0 {
+                continue;
+            }
+            let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
+            let eigs = get_all_eigenvalues(&ham);
+            let degeneracy = (s2 + 1) as usize; // 2S+1
+            for e in eigs {
+                for _ in 0..degeneracy {
+                    su2_all_eigs.push(e);
+                }
+            }
+        }
+
+        // Sort and compare
+        u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        assert_eq!(
+            u1_all_eigs.len(),
+            su2_all_eigs.len(),
+            "Eigenvalue count mismatch: U(1)={}, SU(2)={}",
+            u1_all_eigs.len(),
+            su2_all_eigs.len()
+        );
+
+        for (i, (u1_e, su2_e)) in u1_all_eigs.iter().zip(&su2_all_eigs).enumerate() {
+            assert!(
+                (u1_e - su2_e).abs() < 1e-8,
+                "Eigenvalue {} mismatch: U(1)={}, SU(2)={}",
+                i,
+                u1_e,
+                su2_e
+            );
+        }
+    }
 }
