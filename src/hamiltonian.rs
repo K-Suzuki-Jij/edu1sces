@@ -1,10 +1,10 @@
 pub mod heisenberg_hamiltonian;
 pub mod hubbard_hamiltonian;
 pub mod kondo_lattice_hamiltonian;
-pub mod su2_heisenberg_hamiltonian;
 pub mod make_hamiltonian;
 pub mod make_intersite_elements;
 pub mod make_onsite_elements;
+pub mod su2_heisenberg_hamiltonian;
 pub mod transition_state_holder;
 
 pub use make_hamiltonian::{make_hamiltonian, HamiltonianElementGenerator};

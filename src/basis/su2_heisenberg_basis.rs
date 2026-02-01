@@ -26,6 +26,7 @@ impl SU2HeisenbergBasis {
             .enumerate()
             .map(|(i, s)| (s.clone(), i))
             .collect();
+
         Self {
             basis,
             inverse_basis,
