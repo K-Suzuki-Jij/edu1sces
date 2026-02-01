@@ -1,20 +1,19 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
-use edu1sces::basis::Basis;
-use edu1sces::examples_util::build_heisenberg_chain;
-use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
-use edu1sces::model::{HeisenbergModel, QuantumModel};
+use edu1sces::hamiltonian::su2_heisenberg_hamiltonian::make_su2_heisenberg_hamiltonian;
+use edu1sces::model::SU2HeisenbergModel;
 
 fn benchmark(
-    basis: &Basis,
-    model: &HeisenbergModel,
+    basis: &edu1sces::basis::SU2HeisenbergBasis,
+    model: &SU2HeisenbergModel,
     num_threads: usize,
     num_iterations: usize,
 ) -> (f64, usize) {
     let t0 = Instant::now();
     let mut h = None;
     for _ in 0..num_iterations {
-        h = Some(make_heisenberg_hamiltonian(basis, model, num_threads).unwrap());
+        h = Some(make_su2_heisenberg_hamiltonian(basis, model, num_threads).unwrap());
     }
     let dt = t0.elapsed();
 
@@ -28,25 +27,29 @@ fn benchmark(
 
 fn main() {
     let n = 16;
-    let two_s = 1; // S = 3/2
-    let total_sz = 0.0;
+    let spin = 0.5;
+    let total_s = 0.0;
     let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
-    let model = build_heisenberg_chain(two_s, n, 1.0, 1.0, 0.0, 0.0);
+    // Build 1D chain with nearest-neighbor interactions
+    let mut exchange = HashMap::new();
+    for i in 0..n - 1 {
+        exchange.insert((i, i + 1), 1.0);
+    }
 
-    println!("=== make_heisenberg_hamiltonian Benchmark ===");
-    println!("n={}, two_s={}, total_sz={}\n", n, two_s, total_sz);
+    let model = SU2HeisenbergModel::new(vec![spin; n], exchange).unwrap();
+
+    println!("=== make_su2_heisenberg_hamiltonian Benchmark ===");
+    println!("n={}, spin={}, total_s={}\n", n, spin, total_s);
 
     println!("Building basis...");
     let t0 = Instant::now();
-    // target_quantum_numbers = [2*Sz]
-    let total_sz2 = (2.0_f64 * total_sz).round() as i32;
-    let basis = model.build_basis(&[total_sz2]).unwrap();
+    let basis = model.build_basis(total_s).unwrap();
     let dt = t0.elapsed();
     println!("  dim={}, time={:?}\n", basis.dim(), dt);
 
-    println!("--- make_heisenberg_hamiltonian ---");
+    println!("--- make_su2_heisenberg_hamiltonian ---");
     let mut baseline_time_ms = None;
     let mut last_nnz = 0;
     for &threads in &thread_counts {

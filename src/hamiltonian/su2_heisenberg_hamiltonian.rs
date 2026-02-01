@@ -279,79 +279,68 @@ fn build_pair_transitions_global_dp(
 ) -> Vec<Vec<(usize, f64)>> {
     let dim = prefixes.len();
     let two_k_list: Vec<i32> = prefixes.iter().map(|p| p[1] as i32).collect();
-    let mut acc = vec![0.0f64; dim];
-    let mut touched: Vec<usize> = Vec::new();
+
     let mut out: Vec<Vec<(usize, f64)>> = vec![Vec::new(); dim];
-    let mut buf_a: Vec<(usize, f64)> = Vec::new();
-    let mut buf_b: Vec<(usize, f64)> = Vec::new();
-    let mut buf_diag: Vec<(usize, f64)> = Vec::new();
 
-    for pid in 0..dim {
-        buf_a.clear();
-        buf_a.push((pid, 1.0));
-        for step in plan.forward.iter() {
-            let step_mat = swap_mats
-                .get(&(step.pos, step.a, step.b))
-                .expect("swap matrix missing");
-            apply_step_vec(
-                &buf_a,
-                step_mat,
-                &mut acc,
-                &mut touched,
-                &mut buf_b,
-                zero_eps,
-            );
-            std::mem::swap(&mut buf_a, &mut buf_b);
-            if buf_a.is_empty() {
-                break;
+    out.par_iter_mut().enumerate().for_each_init(
+        || {
+            (
+                vec![0.0f64; dim],
+                Vec::<usize>::new(),
+                Vec::<(usize, f64)>::new(),
+                Vec::<(usize, f64)>::new(),
+                Vec::<(usize, f64)>::new(),
+            )
+        },
+        |(acc, touched, buf_a, buf_b, buf_diag), (pid, out_row)| {
+            buf_a.clear();
+            buf_a.push((pid, 1.0));
+
+            for step in plan.forward.iter() {
+                let step_mat = swap_mats
+                    .get(&(step.pos, step.a, step.b))
+                    .expect("swap matrix missing");
+                apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
+                std::mem::swap(buf_a, buf_b);
+                if buf_a.is_empty() {
+                    return;
+                }
             }
-        }
 
-        if buf_a.is_empty() {
-            continue;
-        }
-
-        buf_diag.clear();
-        buf_diag.reserve(buf_a.len());
-        for &(id, coeff) in buf_a.iter() {
-            let two_k = two_k_list[id];
-            let eig = 0.125
-                * ((two_k * (two_k + 2)
-                    - plan.two_si * (plan.two_si + 2)
-                    - plan.two_sj * (plan.two_sj + 2)) as f64);
-            let v = coeff * eig;
-            if v.abs() >= zero_eps {
-                buf_diag.push((id, v));
+            buf_diag.clear();
+            buf_diag.reserve(buf_a.len());
+            for &(id, coeff) in buf_a.iter() {
+                let two_k = two_k_list[id];
+                let eig = 0.125
+                    * ((two_k * (two_k + 2)
+                        - plan.two_si * (plan.two_si + 2)
+                        - plan.two_sj * (plan.two_sj + 2)) as f64);
+                let v = coeff * eig;
+                if v.abs() >= zero_eps {
+                    buf_diag.push((id, v));
+                }
             }
-        }
 
-        if buf_diag.is_empty() {
-            continue;
-        }
-
-        buf_a.clear();
-        buf_a.extend_from_slice(&buf_diag);
-        buf_b.clear();
-        for step in plan.reverse.iter() {
-            let step_mat = swap_mats
-                .get(&(step.pos, step.a, step.b))
-                .expect("swap matrix missing");
-            apply_step_vec(
-                &buf_a,
-                step_mat,
-                &mut acc,
-                &mut touched,
-                &mut buf_b,
-                zero_eps,
-            );
-            std::mem::swap(&mut buf_a, &mut buf_b);
-            if buf_a.is_empty() {
-                break;
+            if buf_diag.is_empty() {
+                return;
             }
-        }
 
-        out[pid] = std::mem::take(&mut buf_a);
-    }
+            buf_a.clear();
+            buf_a.extend_from_slice(buf_diag);
+            for step in plan.reverse.iter() {
+                let step_mat = swap_mats
+                    .get(&(step.pos, step.a, step.b))
+                    .expect("swap matrix missing");
+                apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
+                std::mem::swap(buf_a, buf_b);
+                if buf_a.is_empty() {
+                    return;
+                }
+            }
+
+            *out_row = std::mem::take(buf_a);
+        },
+    );
 
     out
 }
@@ -445,16 +434,24 @@ fn fill_swap_mats(index: &mut SuffixIndex, plans: &[PairPlan], zero_eps: f64) {
         }
     }
 
-    for ((pos, a, b), _) in steps.into_iter() {
-        let mat = build_swap_matrix(
-            &index.global_prefixes,
-            &index.global_prefix_map,
-            pos,
-            a,
-            b,
-            zero_eps,
-        );
-        index.swap_mats.insert((pos, a, b), mat);
+    let step_keys: Vec<(usize, i32, i32)> = steps.into_keys().collect();
+    let mats: Vec<((usize, i32, i32), Vec<Vec<(usize, f64)>>)> = step_keys
+        .par_iter()
+        .map(|&(pos, a, b)| {
+            let mat = build_swap_matrix(
+                &index.global_prefixes,
+                &index.global_prefix_map,
+                pos,
+                a,
+                b,
+                zero_eps,
+            );
+            ((pos, a, b), mat)
+        })
+        .collect();
+
+    for (key, mat) in mats {
+        index.swap_mats.insert(key, mat);
     }
 }
 
@@ -542,7 +539,7 @@ pub fn make_su2_heisenberg_hamiltonian(
             }
         }
         let pair_tables: Vec<PairTable> = exchange
-            .par_iter()
+            .iter()
             .map(|&((i, j), val)| {
                 let j_idx = if i < j { j } else { i };
                 let index = indices.get(&j_idx).expect("suffix index missing");
