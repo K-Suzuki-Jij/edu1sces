@@ -3,6 +3,8 @@ use anyhow::{bail, Result};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
+use crate::basis::SU2HeisenbergBasis;
+
 /// Spin-S Heisenberg model with SU(2) symmetry
 ///
 /// Only isotropic exchange interactions J * S_i · S_j are allowed.
@@ -47,8 +49,6 @@ impl SU2HeisenbergModel {
 
     /// Build SU(2) basis for a fixed total spin S_total.
     ///
-    /// Returns basis: Vec<Vec<u8>> - list of basis states (sorted lexicographically)
-    ///
     /// Each basis state is a Vec<u8> of length N:
     ///   [2*J_1, 2*J_2, ..., 2*J_N]
     /// where
@@ -57,7 +57,7 @@ impl SU2HeisenbergModel {
     ///   J_N = S_total (target).
     ///
     /// The stored values are 2*J (integers) in u8, so we require sum(2S_i) <= 255.
-    pub fn build_basis(&self, total_s: f64) -> Result<Vec<Vec<u8>>> {
+    pub fn build_basis(&self, total_s: f64) -> Result<SU2HeisenbergBasis> {
         let two_s_f = 2.0 * total_s;
         let two_s_target = two_s_f.round() as i32;
 
@@ -80,10 +80,18 @@ impl SU2HeisenbergModel {
 
         // Parity + range checks
         if ((sum_two_s - two_s_target) & 1) != 0 {
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+            ));
         }
         if two_s_target > sum_two_s {
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+            ));
         }
 
         // N=1: only possible if S_tot == S_1
@@ -91,9 +99,17 @@ impl SU2HeisenbergModel {
             let two_s1 = self.two_s_list[0];
             if two_s1 == two_s_target {
                 let state = vec![two_s1 as u8];
-                return Ok(vec![state]);
+                return Ok(SU2HeisenbergBasis::new(
+                    vec![state],
+                    self.two_s_list.clone(),
+                    two_s_target,
+                ));
             }
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+            ));
         }
 
         // suffix_sum_two_s[i] = sum_{k=i}^{n-1} two_s_list[k]
@@ -118,7 +134,11 @@ impl SU2HeisenbergModel {
 
         let two_s1 = self.two_s_list[0];
         if !can_reach(two_s1, suffix_sum_two_s[1], two_s_target) {
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+            ));
         }
 
         let mut basis: Vec<Vec<u8>> = Vec::new();
@@ -189,7 +209,11 @@ impl SU2HeisenbergModel {
 
         basis.sort_unstable();
 
-        Ok(basis)
+        Ok(SU2HeisenbergBasis::new(
+            basis,
+            self.two_s_list.clone(),
+            two_s_target,
+        ))
     }
 }
 
@@ -460,12 +484,12 @@ mod tests {
 
         // S=1/2: one basis state [2*J_1] = [1]
         let basis = m.build_basis(0.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8]);
 
         // S=0: forbidden
         let basis = m.build_basis(0.0).unwrap();
-        assert_eq!(basis.len(), 0);
+        assert_eq!(basis.dim(), 0);
     }
 
     #[test]
@@ -480,13 +504,13 @@ mod tests {
 
         // S=0: one basis [2*J_1, 2*J_2] = [1, 0]
         let basis = m.build_basis(0.0).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 0]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 0]);
 
         // S=1: one basis [2*J_1, 2*J_2] = [1, 2]
         let basis = m.build_basis(1.0).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 2]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 2]);
     }
 
     #[test]
@@ -504,15 +528,15 @@ mod tests {
         // Path 1: J_1=1/2, J_2=0, then 0 ⊗ 1/2 = 1/2 → [1, 0, 1]
         // Path 2: J_1=1/2, J_2=1, then 1 ⊗ 1/2 = 1/2 or 3/2, pick 1/2 → [1, 2, 1]
         let basis = m.build_basis(0.5).unwrap();
-        assert_eq!(basis.len(), 2);
-        assert!(basis.contains(&vec![1u8, 0, 1]));
-        assert!(basis.contains(&vec![1u8, 2, 1]));
+        assert_eq!(basis.dim(), 2);
+        assert!(basis.basis.contains(&vec![1u8, 0, 1]));
+        assert!(basis.basis.contains(&vec![1u8, 2, 1]));
 
         // S=3/2: one basis
         // J_1=1/2, J_2=1, then 1 ⊗ 1/2 = 3/2 → [1, 2, 3]
         let basis = m.build_basis(1.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 2, 3]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 2, 3]);
     }
 
     #[test]
@@ -527,18 +551,18 @@ mod tests {
 
         // S=0: 2 bases
         let basis = m.build_basis(0.0).unwrap();
-        assert_eq!(basis.len(), 2);
+        assert_eq!(basis.dim(), 2);
 
         // S=1: 3 bases
         let basis = m.build_basis(1.0).unwrap();
-        assert_eq!(basis.len(), 3);
+        assert_eq!(basis.dim(), 3);
 
         // S=2: 1 basis
         // [2*J_1, 2*J_2, 2*J_3, 2*J_4] = [1, 2, 3, 4]
         // J_1=1/2, J_2=1, J_3=3/2, J_4=2
         let basis = m.build_basis(2.0).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 2, 3, 4]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 2, 3, 4]);
     }
 
     #[test]
@@ -553,12 +577,12 @@ mod tests {
 
         // S=1/2: [2*J_1, 2*J_2] = [1, 1]
         let basis = m.build_basis(0.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 1]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 1]);
 
         // S=3/2: [2*J_1, 2*J_2] = [1, 3]
         let basis = m.build_basis(1.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 3]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 3]);
     }
 }
