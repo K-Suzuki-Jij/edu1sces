@@ -170,6 +170,7 @@ fn build_adjacent_pair_matrix(
     adjacent_pos: usize,
     two_si: i32,
     two_sj: i32,
+    tables: Option<(&Sixj6Table, &Sixj6Table)>,
     zero_eps: f64,
 ) -> Vec<Vec<(usize, f64)>> {
     let dim = prefixes.len();
@@ -231,32 +232,41 @@ fn build_adjacent_pair_matrix(
                 while k <= max_k {
                     let eig_k = 0.125
                         * ((k * (k + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
-                    let sixj1 = f64::from(
-                        Wigner6j {
-                            tj1: j_km1,
-                            tj2: two_si,
-                            tj3: j_k,
-                            tj4: two_sj,
-                            tj5: j_k1,
-                            tj6: k,
-                        }
-                        .value(),
-                    );
+                    // Use 6j table if available, otherwise compute directly
+                    let sixj1 = if let Some((table1, _)) = tables {
+                        table1.get(j_km1, j_k, j_k1, k)
+                    } else {
+                        f64::from(
+                            Wigner6j {
+                                tj1: j_km1,
+                                tj2: two_si,
+                                tj3: j_k,
+                                tj4: two_sj,
+                                tj5: j_k1,
+                                tj6: k,
+                            }
+                            .value(),
+                        )
+                    };
                     if sixj1.abs() < zero_eps {
                         k += 2;
                         continue;
                     }
-                    let sixj2 = f64::from(
-                        Wigner6j {
-                            tj1: j_km1,
-                            tj2: two_si,
-                            tj3: jk_prime,
-                            tj4: two_sj,
-                            tj5: j_k1,
-                            tj6: k,
-                        }
-                        .value(),
-                    );
+                    let sixj2 = if let Some((table1, _)) = tables {
+                        table1.get(j_km1, jk_prime, j_k1, k)
+                    } else {
+                        f64::from(
+                            Wigner6j {
+                                tj1: j_km1,
+                                tj2: two_si,
+                                tj3: jk_prime,
+                                tj4: two_sj,
+                                tj5: j_k1,
+                                tj6: k,
+                            }
+                            .value(),
+                        )
+                    };
                     if sixj2.abs() >= zero_eps {
                         let weight = (k + 1) as f64;
                         sum += weight * eig_k * sixj1 * sixj2;
@@ -639,6 +649,12 @@ fn build_pair_transitions_global_dp(
         .get(&(plan.adjacent_pos, plan.two_si, plan.two_sj))
         .expect("adjacent pair matrix missing");
 
+    // Fast path: adjacent pairs have no swaps, so adjacent_mat IS the transition matrix
+    if plan.forward.is_empty() {
+        return adjacent_mat.clone();
+    }
+
+    // Slow path: non-adjacent pairs require swap chain
     let mut out: Vec<Vec<(usize, f64)>> = vec![Vec::new(); dim];
 
     out.par_iter_mut().enumerate().for_each_init(
@@ -654,7 +670,7 @@ fn build_pair_transitions_global_dp(
             buf_a.clear();
             buf_a.push((pid, 1.0));
 
-            // Apply forward swaps (O(j-i-1) steps, zero for adjacent pairs)
+            // Apply forward swaps (O(j-i-1) steps)
             for step in plan.forward.iter() {
                 let step_mat = swap_mats
                     .get(&(step.pos, step.a, step.b))
@@ -852,6 +868,7 @@ fn fill_swap_mats(
                 pos,
                 two_si,
                 two_sj,
+                tables,
                 zero_eps,
             );
             ((pos, two_si, two_sj), mat)
@@ -936,13 +953,26 @@ pub fn make_su2_heisenberg_hamiltonian(
             .iter()
             .map(|(&(i, j), &val)| ((i, j), val))
             .collect();
-        let mut indices: AHashMap<usize, SuffixIndex> = AHashMap::new();
+
+        // Collect unique j values needed
+        let mut j_values: Vec<usize> = exchange
+            .iter()
+            .map(|&((i, j), _)| if i < j { j } else { i })
+            .collect();
+        j_values.sort_unstable();
+        j_values.dedup();
+
+        // Build suffix indices in parallel
+        let index_pairs: Vec<(usize, SuffixIndex)> = j_values
+            .par_iter()
+            .map(|&j| (j, build_suffix_index(basis, j)))
+            .collect();
+        let indices: AHashMap<usize, SuffixIndex> = index_pairs.into_iter().collect();
+
+        // Build plans (fast, no need for parallel)
         let mut plans_by_j: AHashMap<usize, Vec<PairPlan>> = AHashMap::new();
         for &((i, j), _) in exchange.iter() {
             let (i, j) = if i < j { (i, j) } else { (j, i) };
-            if !indices.contains_key(&j) {
-                indices.insert(j, build_suffix_index(basis, j));
-            }
             let plan = build_pair_plan(j + 1, &basis.two_s_list, i, j);
             plans_by_j.entry(j).or_default().push(plan);
         }
@@ -977,14 +1007,22 @@ pub fn make_su2_heisenberg_hamiltonian(
             None
         };
 
-        for (j, plans) in plans_by_j.into_iter() {
-            if let Some(index) = indices.get_mut(&j) {
-                let tables_ref = tables.as_ref().map(|(t1, t2)| (t1.as_ref(), t2.as_ref()));
-                fill_swap_mats(index, &plans, tables_ref, zero_eps);
+        // Convert to Vec for parallel processing
+        let mut index_vec: Vec<(usize, SuffixIndex)> = indices.into_iter().collect();
+        let tables_ref = tables.as_ref().map(|(t1, t2)| (Arc::clone(t1), Arc::clone(t2)));
+
+        index_vec.par_iter_mut().for_each(|(j, index)| {
+            if let Some(plans) = plans_by_j.get(j) {
+                let tref = tables_ref
+                    .as_ref()
+                    .map(|(t1, t2)| (t1.as_ref(), t2.as_ref()));
+                fill_swap_mats(index, plans, tref, zero_eps);
             }
-        }
+        });
+
+        let indices: AHashMap<usize, SuffixIndex> = index_vec.into_iter().collect();
         let pair_tables: Vec<PairTable> = exchange
-            .iter()
+            .par_iter()
             .map(|&((i, j), val)| {
                 let j_idx = if i < j { j } else { i };
                 let index = indices.get(&j_idx).expect("suffix index missing");
