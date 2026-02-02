@@ -1029,14 +1029,26 @@ pub fn make_su2_heisenberg_hamiltonian(
 
     let zero_eps = MATRIX_ZERO_EPS;
 
+    // Build site-to-position mapping from coupling_order
+    // site_to_pos[original_site] = coupling_position
+    let mut site_to_pos = vec![0usize; n];
+    for (pos, &site) in basis.coupling_order.iter().enumerate() {
+        site_to_pos[site] = pos;
+    }
+
     with_pool(num_threads, || {
+        // Convert exchange bonds from original site indices to coupling positions
         let exchange: Vec<((usize, usize), f64)> = model
             .exchange
             .iter()
-            .map(|(&(i, j), &val)| ((i, j), val))
+            .map(|(&(i, j), &val)| {
+                let pos_i = site_to_pos[i];
+                let pos_j = site_to_pos[j];
+                ((pos_i, pos_j), val)
+            })
             .collect();
 
-        // Collect unique j values needed
+        // Collect unique j values needed (now in coupling positions)
         let mut j_values: Vec<usize> = exchange
             .iter()
             .map(|&((i, j), _)| if i < j { j } else { i })
@@ -1091,7 +1103,9 @@ pub fn make_su2_heisenberg_hamiltonian(
 
         // Convert to Vec for parallel processing
         let mut index_vec: Vec<(usize, SuffixIndex)> = indices.into_iter().collect();
-        let tables_ref = tables.as_ref().map(|(t1, t2)| (Arc::clone(t1), Arc::clone(t2)));
+        let tables_ref = tables
+            .as_ref()
+            .map(|(t1, t2)| (Arc::clone(t1), Arc::clone(t2)));
 
         index_vec.par_iter_mut().for_each(|(j, index)| {
             if let Some(plans) = plans_by_j.get(j) {
