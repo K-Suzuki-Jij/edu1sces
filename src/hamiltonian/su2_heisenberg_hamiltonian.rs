@@ -38,7 +38,7 @@ struct PairPlan {
 
 struct PairGroup {
     prefix_cols: Arc<Vec<usize>>,
-    transitions: Vec<Vec<(usize, f64)>>,
+    transitions: CsrMatrix,
 }
 
 struct PairTable {
@@ -56,9 +56,9 @@ struct SuffixIndex {
     prefix_cols: Vec<Arc<Vec<usize>>>,
     global_prefixes: Vec<Vec<u8>>,
     global_prefix_map: AHashMap<Vec<u8>, usize>,
-    swap_mats: AHashMap<(usize, i32, i32), Vec<Vec<(usize, f64)>>>,
+    swap_mats: AHashMap<(usize, i32, i32), CsrMatrix>,
     /// Adjacent pair matrices: (adjacent_pos, two_si, two_sj) -> matrix
-    adjacent_mats: AHashMap<(usize, i32, i32), Vec<Vec<(usize, f64)>>>,
+    adjacent_mats: AHashMap<(usize, i32, i32), CsrMatrix>,
 }
 
 thread_local! {
@@ -172,7 +172,7 @@ fn build_adjacent_pair_matrix(
     two_sj: i32,
     tables: Option<(&Sixj6Table, &Sixj6Table)>,
     zero_eps: f64,
-) -> Vec<Vec<(usize, f64)>> {
+) -> CsrMatrix {
     let dim = prefixes.len();
 
     let prefix_len = if prefixes.is_empty() {
@@ -291,7 +291,25 @@ fn build_adjacent_pair_matrix(
         })
         .collect();
 
-    out
+    // Convert to CsrMatrix
+    let mut rows = Vec::with_capacity(dim + 1);
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+    rows.push(0);
+    for row_data in out {
+        for (col, val) in row_data {
+            cols.push(col);
+            vals.push(val);
+        }
+        rows.push(cols.len());
+    }
+    CsrMatrix {
+        row_dim: dim,
+        col_dim: dim,
+        rows,
+        cols,
+        vals,
+    }
 }
 
 fn swap_coeffs_with_table(
@@ -494,9 +512,8 @@ fn build_swap_matrix_with_table(
     table1: &Sixj6Table,
     table2: &Sixj6Table,
     zero_eps: f64,
-) -> Vec<Vec<(usize, f64)>> {
+) -> CsrMatrix {
     let dim = prefixes.len();
-    let mut out: Vec<Vec<(usize, f64)>> = vec![Vec::new(); dim];
 
     // Reusable buffer to avoid allocations
     let prefix_len = if prefixes.is_empty() {
@@ -506,7 +523,12 @@ fn build_swap_matrix_with_table(
     };
     let mut new_prefix = vec![0u8; prefix_len];
 
-    for (pid, prefix) in prefixes.iter().enumerate() {
+    let mut rows = Vec::with_capacity(dim + 1);
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+    rows.push(0);
+
+    for prefix in prefixes.iter() {
         if pos == 0 {
             let j1 = prefix[1] as i32;
             let phase = phase_from_half_integer(a + b - j1);
@@ -514,9 +536,11 @@ fn build_swap_matrix_with_table(
             new_prefix[0] = b as u8;
             if let Some(&nid) = prefix_map.get(&new_prefix) {
                 if phase.abs() >= zero_eps {
-                    out[pid].push((nid, phase));
+                    cols.push(nid);
+                    vals.push(phase);
                 }
             }
+            rows.push(cols.len());
             continue;
         }
 
@@ -525,22 +549,28 @@ fn build_swap_matrix_with_table(
         let j_k1 = prefix[pos + 1] as i32;
         let coeffs = swap_coeffs_with_table(x, j_k, j_k1, a, b, table1, table2, zero_eps);
 
-        let mut row = Vec::with_capacity(coeffs.len());
         new_prefix.copy_from_slice(prefix);
         let original_val = new_prefix[pos];
         for &(j_kp, c) in coeffs.iter() {
             new_prefix[pos] = j_kp as u8;
             if let Some(&nid) = prefix_map.get(&new_prefix) {
                 if c.abs() >= zero_eps {
-                    row.push((nid, c));
+                    cols.push(nid);
+                    vals.push(c);
                 }
             }
         }
-        new_prefix[pos] = original_val; // Restore for clarity (not strictly necessary)
-        out[pid] = row;
+        new_prefix[pos] = original_val;
+        rows.push(cols.len());
     }
 
-    out
+    CsrMatrix {
+        row_dim: dim,
+        col_dim: dim,
+        rows,
+        cols,
+        vals,
+    }
 }
 
 fn build_swap_matrix(
@@ -550,9 +580,8 @@ fn build_swap_matrix(
     a: i32,
     b: i32,
     zero_eps: f64,
-) -> Vec<Vec<(usize, f64)>> {
+) -> CsrMatrix {
     let dim = prefixes.len();
-    let mut out: Vec<Vec<(usize, f64)>> = vec![Vec::new(); dim];
 
     // Reusable buffer to avoid allocations
     let prefix_len = if prefixes.is_empty() {
@@ -562,7 +591,12 @@ fn build_swap_matrix(
     };
     let mut new_prefix = vec![0u8; prefix_len];
 
-    for (pid, prefix) in prefixes.iter().enumerate() {
+    let mut rows = Vec::with_capacity(dim + 1);
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+    rows.push(0);
+
+    for prefix in prefixes.iter() {
         if pos == 0 {
             let j1 = prefix[1] as i32;
             let phase = phase_from_half_integer(a + b - j1);
@@ -570,9 +604,11 @@ fn build_swap_matrix(
             new_prefix[0] = b as u8;
             if let Some(&nid) = prefix_map.get(&new_prefix) {
                 if phase.abs() >= zero_eps {
-                    out[pid].push((nid, phase));
+                    cols.push(nid);
+                    vals.push(phase);
                 }
             }
+            rows.push(cols.len());
             continue;
         }
 
@@ -581,25 +617,31 @@ fn build_swap_matrix(
         let j_k1 = prefix[pos + 1] as i32;
         let coeffs = swap_coeffs(x, j_k, j_k1, a, b, zero_eps);
 
-        let mut row = Vec::with_capacity(coeffs.len());
         new_prefix.copy_from_slice(prefix);
         for &(j_kp, c) in coeffs.iter() {
             new_prefix[pos] = j_kp as u8;
             if let Some(&nid) = prefix_map.get(&new_prefix) {
                 if c.abs() >= zero_eps {
-                    row.push((nid, c));
+                    cols.push(nid);
+                    vals.push(c);
                 }
             }
         }
-        out[pid] = row;
+        rows.push(cols.len());
     }
 
-    out
+    CsrMatrix {
+        row_dim: dim,
+        col_dim: dim,
+        rows,
+        cols,
+        vals,
+    }
 }
 
 fn apply_step_vec(
     vec_in: &[(usize, f64)],
-    step_mat: &[Vec<(usize, f64)>],
+    step_mat: &CsrMatrix,
     acc: &mut [f64],
     touched: &mut Vec<usize>,
     out: &mut Vec<(usize, f64)>,
@@ -611,7 +653,11 @@ fn apply_step_vec(
         if coeff.abs() < zero_eps {
             continue;
         }
-        for &(nid, w) in step_mat[id].iter() {
+        let row_start = step_mat.rows[id];
+        let row_end = step_mat.rows[id + 1];
+        for k in row_start..row_end {
+            let nid = step_mat.cols[k];
+            let w = step_mat.vals[k];
             let v = coeff * w;
             if v.abs() < zero_eps {
                 continue;
@@ -638,10 +684,10 @@ fn apply_step_vec(
 fn build_pair_transitions_global_dp(
     prefixes: &[Vec<u8>],
     plan: &PairPlan,
-    swap_mats: &AHashMap<(usize, i32, i32), Vec<Vec<(usize, f64)>>>,
-    adjacent_mats: &AHashMap<(usize, i32, i32), Vec<Vec<(usize, f64)>>>,
+    swap_mats: &AHashMap<(usize, i32, i32), CsrMatrix>,
+    adjacent_mats: &AHashMap<(usize, i32, i32), CsrMatrix>,
     zero_eps: f64,
-) -> Vec<Vec<(usize, f64)>> {
+) -> CsrMatrix {
     let dim = prefixes.len();
 
     // Get the adjacent pair matrix for this plan
@@ -655,57 +701,76 @@ fn build_pair_transitions_global_dp(
     }
 
     // Slow path: non-adjacent pairs require swap chain
-    let mut out: Vec<Vec<(usize, f64)>> = vec![Vec::new(); dim];
+    let out: Vec<Vec<(usize, f64)>> = (0..dim)
+        .into_par_iter()
+        .map_init(
+            || {
+                (
+                    vec![0.0f64; dim],
+                    Vec::<usize>::new(),
+                    Vec::<(usize, f64)>::new(),
+                    Vec::<(usize, f64)>::new(),
+                )
+            },
+            |(acc, touched, buf_a, buf_b), pid| {
+                buf_a.clear();
+                buf_a.push((pid, 1.0));
 
-    out.par_iter_mut().enumerate().for_each_init(
-        || {
-            (
-                vec![0.0f64; dim],
-                Vec::<usize>::new(),
-                Vec::<(usize, f64)>::new(),
-                Vec::<(usize, f64)>::new(),
-            )
-        },
-        |(acc, touched, buf_a, buf_b), (pid, out_row)| {
-            buf_a.clear();
-            buf_a.push((pid, 1.0));
+                // Apply forward swaps (O(j-i-1) steps)
+                for step in plan.forward.iter() {
+                    let step_mat = swap_mats
+                        .get(&(step.pos, step.a, step.b))
+                        .expect("swap matrix missing");
+                    apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
+                    std::mem::swap(buf_a, buf_b);
+                    if buf_a.is_empty() {
+                        return Vec::new();
+                    }
+                }
 
-            // Apply forward swaps (O(j-i-1) steps)
-            for step in plan.forward.iter() {
-                let step_mat = swap_mats
-                    .get(&(step.pos, step.a, step.b))
-                    .expect("swap matrix missing");
-                apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
+                // Apply adjacent pair matrix (S_i · S_j interaction via 6j recoupling)
+                apply_step_vec(buf_a, adjacent_mat, acc, touched, buf_b, zero_eps);
                 std::mem::swap(buf_a, buf_b);
                 if buf_a.is_empty() {
-                    return;
+                    return Vec::new();
                 }
-            }
 
-            // Apply adjacent pair matrix (S_i · S_j interaction via 6j recoupling)
-            apply_step_vec(buf_a, adjacent_mat, acc, touched, buf_b, zero_eps);
-            std::mem::swap(buf_a, buf_b);
-            if buf_a.is_empty() {
-                return;
-            }
-
-            // Apply reverse swaps
-            for step in plan.reverse.iter() {
-                let step_mat = swap_mats
-                    .get(&(step.pos, step.a, step.b))
-                    .expect("swap matrix missing");
-                apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
-                std::mem::swap(buf_a, buf_b);
-                if buf_a.is_empty() {
-                    return;
+                // Apply reverse swaps
+                for step in plan.reverse.iter() {
+                    let step_mat = swap_mats
+                        .get(&(step.pos, step.a, step.b))
+                        .expect("swap matrix missing");
+                    apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
+                    std::mem::swap(buf_a, buf_b);
+                    if buf_a.is_empty() {
+                        return Vec::new();
+                    }
                 }
-            }
 
-            *out_row = std::mem::take(buf_a);
-        },
-    );
+                std::mem::take(buf_a)
+            },
+        )
+        .collect();
 
-    out
+    // Convert to CsrMatrix
+    let mut rows = Vec::with_capacity(dim + 1);
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+    rows.push(0);
+    for row_data in out {
+        for (col, val) in row_data {
+            cols.push(col);
+            vals.push(val);
+        }
+        rows.push(cols.len());
+    }
+    CsrMatrix {
+        row_dim: dim,
+        col_dim: dim,
+        rows,
+        cols,
+        vals,
+    }
 }
 
 fn build_suffix_index(basis: &SU2HeisenbergBasis, j: usize) -> SuffixIndex {
@@ -808,7 +873,7 @@ fn fill_swap_mats(
 
     if let Some((table1, table2)) = tables {
         // Uniform spin case: use pre-built 6j tables
-        let mats: Vec<((usize, i32, i32), Vec<Vec<(usize, f64)>>)> = step_keys
+        let mats: Vec<((usize, i32, i32), CsrMatrix)> = step_keys
             .par_iter()
             .map(|&(pos, a, b)| {
                 let mat = build_swap_matrix_with_table(
@@ -830,7 +895,7 @@ fn fill_swap_mats(
         }
     } else {
         // Non-uniform case: fallback to per-call 6j computation
-        let mats: Vec<((usize, i32, i32), Vec<Vec<(usize, f64)>>)> = step_keys
+        let mats: Vec<((usize, i32, i32), CsrMatrix)> = step_keys
             .par_iter()
             .map(|&(pos, a, b)| {
                 let mat = build_swap_matrix(
@@ -859,7 +924,7 @@ fn fill_swap_mats(
     let adjacent_key_list: Vec<(usize, i32, i32)> = adjacent_keys.into_keys().collect();
 
     // Build adjacent pair matrices (these use 6j symbols for recoupling)
-    let adjacent_mats: Vec<((usize, i32, i32), Vec<Vec<(usize, f64)>>)> = adjacent_key_list
+    let adjacent_mats: Vec<((usize, i32, i32), CsrMatrix)> = adjacent_key_list
         .par_iter()
         .map(|&(pos, two_si, two_sj)| {
             let mat = build_adjacent_pair_matrix(
@@ -901,24 +966,41 @@ fn build_pair_table_with_index(
     let mut groups: Vec<PairGroup> = Vec::with_capacity(index.group_prefix_ids.len());
     for (gid, local_prefixes) in index.group_prefix_ids.iter().enumerate() {
         let local_map = &index.group_local_maps[gid];
-        let mut transitions: Vec<Vec<(usize, f64)>> = Vec::with_capacity(local_prefixes.len());
+
+        // Build CSR matrix for transitions
+        let row_dim = local_prefixes.len();
+        let col_dim = local_map.len();
+        let mut rows: Vec<usize> = Vec::with_capacity(row_dim + 1);
+        let mut cols: Vec<usize> = Vec::new();
+        let mut vals: Vec<f64> = Vec::new();
+
+        rows.push(0);
         for &gpid in local_prefixes.iter() {
-            let trans = &global_transitions[gpid];
-            let mut mapped: Vec<(usize, f64)> = Vec::with_capacity(trans.len());
-            for &(new_gpid, coeff) in trans.iter() {
+            let start = global_transitions.rows[gpid];
+            let end = global_transitions.rows[gpid + 1];
+            for k in start..end {
+                let new_gpid = global_transitions.cols[k];
+                let coeff = global_transitions.vals[k];
                 if coeff.abs() < zero_eps {
                     continue;
                 }
                 if let Some(&lid) = local_map.get(&new_gpid) {
-                    mapped.push((lid, coeff));
+                    cols.push(lid);
+                    vals.push(coeff);
                 }
             }
-            transitions.push(mapped);
+            rows.push(cols.len());
         }
 
         groups.push(PairGroup {
             prefix_cols: index.prefix_cols[gid].clone(),
-            transitions,
+            transitions: CsrMatrix {
+                row_dim,
+                col_dim,
+                rows,
+                cols,
+                vals,
+            },
         });
     }
 
@@ -1041,8 +1123,12 @@ pub fn make_su2_heisenberg_hamiltonian(
                     let gid = table.row_group_ids[row];
                     let pid = table.row_prefix_ids[row];
                     let group = &table.groups[gid];
-                    let transitions = &group.transitions[pid];
-                    for &(new_pid, v) in transitions.iter() {
+                    let trans = &group.transitions;
+                    let start = trans.rows[pid];
+                    let end = trans.rows[pid + 1];
+                    for k in start..end {
+                        let new_pid = trans.cols[k];
+                        let v = trans.vals[k];
                         if v.abs() < zero_eps {
                             continue;
                         }
@@ -1105,8 +1191,12 @@ pub fn make_su2_heisenberg_hamiltonian(
                     let gid = table.row_group_ids[row];
                     let pid = table.row_prefix_ids[row];
                     let group = &table.groups[gid];
-                    let transitions = &group.transitions[pid];
-                    for &(new_pid, v) in transitions.iter() {
+                    let trans = &group.transitions;
+                    let start = trans.rows[pid];
+                    let end = trans.rows[pid + 1];
+                    for k in start..end {
+                        let new_pid = trans.cols[k];
+                        let v = trans.vals[k];
                         if v.abs() < zero_eps {
                             continue;
                         }
