@@ -16,12 +16,14 @@ pub struct SU2HeisenbergBasis {
     pub basis: Vec<Vec<u8>>,
     /// Inverse mapping: state -> index
     pub inverse_basis: AHashMap<Vec<u8>, usize>,
-    /// 2*S_i for each site in coupling order (i.e., two_s_list[k] = 2*S_{coupling_order[k]})
+    /// 2*S_i for each site in original site order (i.e., two_s_list[site] = 2*S_site)
     pub two_s_list: Vec<i32>,
     /// 2*S_total (target total spin)
     pub two_s_total: i32,
-    /// Site coupling order: coupling_order[k] = original site index at position k
+    /// Site coupling order: coupling_order[pos] = site at position pos
     pub coupling_order: Vec<usize>,
+    /// Inverse of coupling_order: site_to_pos[site] = position of site
+    pub site_to_pos: Vec<usize>,
 }
 
 impl SU2HeisenbergBasis {
@@ -37,12 +39,18 @@ impl SU2HeisenbergBasis {
             .map(|(i, s)| (s.clone(), i))
             .collect();
 
+        let mut site_to_pos = vec![0usize; coupling_order.len()];
+        for (pos, &site) in coupling_order.iter().enumerate() {
+            site_to_pos[site] = pos;
+        }
+
         Self {
             basis,
             inverse_basis,
             two_s_list,
             two_s_total,
             coupling_order,
+            site_to_pos,
         }
     }
 
@@ -57,6 +65,10 @@ impl SU2HeisenbergBasis {
     /// Get the coupling position of an original site index.
     /// Returns the position in the coupling order (0-indexed).
     pub fn site_to_position(&self, site: usize) -> Option<usize> {
-        self.coupling_order.iter().position(|&s| s == site)
+        if site < self.site_to_pos.len() {
+            Some(self.site_to_pos[site])
+        } else {
+            None
+        }
     }
 }

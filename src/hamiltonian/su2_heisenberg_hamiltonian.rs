@@ -291,8 +291,30 @@ fn swap_coeffs(
 /// New algorithm: Move site i to position j-1 (adjacent to j), then apply Casimir.
 /// This requires only O(j-i-1) swaps instead of O(max(i,j)).
 /// For adjacent pairs (i, i+1), this means ZERO swaps!
-fn build_pair_plan(n: usize, two_s_list: &[i32], i: usize, j: usize) -> PairPlan {
-    let (i, j) = if i < j { (i, j) } else { (j, i) };
+///
+/// Arguments:
+/// - two_s_list: spin values in original site order (two_s_list[site] = 2*S_site)
+/// - coupling_order: mapping from position to site (coupling_order[pos] = site)
+/// - site_to_pos: inverse mapping (site_to_pos[site] = position)
+/// - site_i, site_j: physical site indices (not positions)
+fn build_pair_plan(
+    two_s_list: &[i32],
+    coupling_order: &[usize],
+    site_to_pos: &[usize],
+    site_i: usize,
+    site_j: usize,
+) -> PairPlan {
+    let n = coupling_order.len();
+
+    // Get coupling positions from lookup table
+    let pos_i = site_to_pos[site_i];
+    let pos_j = site_to_pos[site_j];
+    let (i, j) = if pos_i < pos_j {
+        (pos_i, pos_j)
+    } else {
+        (pos_j, pos_i)
+    };
+
     let mut order = (0..n).collect::<Vec<_>>();
     let mut forward = Vec::new();
 
@@ -300,14 +322,15 @@ fn build_pair_plan(n: usize, two_s_list: &[i32], i: usize, j: usize) -> PairPlan
     // Initial: ... s_i, s_{i+1}, ..., s_{j-1}, s_j, ...
     // After:   ... s_{i+1}, ..., s_{j-1}, s_i, s_j, ...
     // Number of swaps = j - i - 1 (zero for adjacent pairs!)
-    let mut pos_i = i;
-    while pos_i < j - 1 {
-        let pos = pos_i;
-        let a = two_s_list[order[pos]];
-        let b = two_s_list[order[pos + 1]];
+    let mut cur_pos = i;
+    while cur_pos < j - 1 {
+        let pos = cur_pos;
+        // order[pos] is the current position, coupling_order maps position to site
+        let a = two_s_list[coupling_order[order[pos]]];
+        let b = two_s_list[coupling_order[order[pos + 1]]];
         forward.push(SwapStep { pos, a, b });
         order.swap(pos, pos + 1);
-        pos_i += 1;
+        cur_pos += 1;
     }
 
     let mut reverse = Vec::with_capacity(forward.len());
@@ -320,8 +343,8 @@ fn build_pair_plan(n: usize, two_s_list: &[i32], i: usize, j: usize) -> PairPlan
     }
 
     PairPlan {
-        two_si: two_s_list[i],
-        two_sj: two_s_list[j],
+        two_si: two_s_list[site_i],
+        two_sj: two_s_list[site_j],
         // After moving site i to position j-1, the adjacent pair is at positions (j-1, j).
         // The adjacent pair matrix is applied at position j-1 (using prefix indices).
         adjacent_pos: j - 1,
@@ -524,7 +547,7 @@ fn build_pair_transitions_global_dp(
     }
 }
 
-fn build_suffix_index(basis: &SU2HeisenbergBasis, j: usize) -> SuffixIndex {
+fn build_suffix_index(basis: &SU2HeisenbergBasis, pos_j: usize) -> SuffixIndex {
     let dim = basis.dim();
 
     let mut group_map = AHashMap::new();
@@ -538,7 +561,7 @@ fn build_suffix_index(basis: &SU2HeisenbergBasis, j: usize) -> SuffixIndex {
     let mut global_prefixes = Vec::new();
 
     for (row, state) in basis.basis.iter().enumerate() {
-        let suffix = state[j + 1..].to_vec();
+        let suffix = state[pos_j + 1..].to_vec();
         let gid = if let Some(&gid) = group_map.get(&suffix) {
             gid
         } else {
@@ -550,7 +573,7 @@ fn build_suffix_index(basis: &SU2HeisenbergBasis, j: usize) -> SuffixIndex {
             gid
         };
 
-        let prefix = state[..=j].to_vec();
+        let prefix = state[..=pos_j].to_vec();
         let gpid = if let Some(&pid) = global_prefix_map.get(&prefix) {
             pid
         } else {
@@ -674,14 +697,15 @@ fn fill_swap_mats(
 
 fn build_pair_table_with_index(
     index: &SuffixIndex,
-    i: usize,
-    j: usize,
+    site_i: usize,
+    site_j: usize,
     val: f64,
     two_s_list: &[i32],
+    coupling_order: &[usize],
+    site_to_pos: &[usize],
     zero_eps: f64,
 ) -> PairTable {
-    let (i, j) = if i < j { (i, j) } else { (j, i) };
-    let plan = build_pair_plan(j + 1, two_s_list, i, j);
+    let plan = build_pair_plan(two_s_list, coupling_order, site_to_pos, site_i, site_j);
     let global_transitions = build_pair_transitions_global_dp(
         &index.global_prefixes,
         &plan,
@@ -755,47 +779,39 @@ pub fn make_su2_heisenberg_hamiltonian(
     }
 
     let zero_eps = MATRIX_ZERO_EPS;
-
-    // Build site-to-position mapping from coupling_order
-    // site_to_pos[original_site] = coupling_position
-    let mut site_to_pos = vec![0usize; n];
-    for (pos, &site) in basis.coupling_order.iter().enumerate() {
-        site_to_pos[site] = pos;
-    }
+    let site_to_pos = &basis.site_to_pos;
 
     with_pool(num_threads, || {
-        // Convert exchange bonds from original site indices to coupling positions
-        let exchange = model
-            .exchange
-            .iter()
-            .map(|(&(i, j), &val)| {
-                let pos_i = site_to_pos[i];
-                let pos_j = site_to_pos[j];
-                ((pos_i, pos_j), val)
-            })
-            .collect::<Vec<_>>();
+        // Use exchange bonds directly with site indices
+        let exchange: Vec<_> = model.exchange.iter().map(|(&k, &v)| (k, v)).collect();
 
-        // Collect unique j values needed (now in coupling positions)
-        let mut j_values = exchange
+        // Collect unique max positions needed
+        let mut j_values: Vec<_> = exchange
             .iter()
-            .map(|&((i, j), _)| if i < j { j } else { i })
-            .collect::<Vec<_>>();
+            .map(|&((site_i, site_j), _)| site_to_pos[site_i].max(site_to_pos[site_j]))
+            .collect();
         j_values.sort_unstable();
         j_values.dedup();
 
-        // Build suffix indices in parallel
+        // Build suffix indices in parallel (keyed by position)
         let index_pairs = j_values
             .par_iter()
-            .map(|&j| (j, build_suffix_index(basis, j)))
+            .map(|&pos_j| (pos_j, build_suffix_index(basis, pos_j)))
             .collect::<Vec<_>>();
         let indices = index_pairs.into_iter().collect::<AHashMap<_, _>>();
 
-        // Build plans (fast, no need for parallel)
+        // Build plans (keyed by max position)
         let mut plans_by_j: AHashMap<_, Vec<_>> = AHashMap::new();
-        for &((i, j), _) in exchange.iter() {
-            let (i, j) = if i < j { (i, j) } else { (j, i) };
-            let plan = build_pair_plan(j + 1, &basis.two_s_list, i, j);
-            plans_by_j.entry(j).or_default().push(plan);
+        for &((site_i, site_j), _) in exchange.iter() {
+            let pos_j = site_to_pos[site_i].max(site_to_pos[site_j]);
+            let plan = build_pair_plan(
+                &basis.two_s_list,
+                &basis.coupling_order,
+                &site_to_pos,
+                site_i,
+                site_j,
+            );
+            plans_by_j.entry(pos_j).or_default().push(plan);
         }
         // Check if all spins are uniform (for 6j table optimization)
         let is_uniform_spin = {
@@ -846,10 +862,19 @@ pub fn make_su2_heisenberg_hamiltonian(
         let indices = index_vec.into_iter().collect::<AHashMap<_, _>>();
         let pair_tables = exchange
             .par_iter()
-            .map(|&((i, j), val)| {
-                let j_idx = if i < j { j } else { i };
-                let index = indices.get(&j_idx).expect("suffix index missing");
-                build_pair_table_with_index(index, i, j, val, &basis.two_s_list, zero_eps)
+            .map(|&((site_i, site_j), val)| {
+                let pos_j = site_to_pos[site_i].max(site_to_pos[site_j]);
+                let index = indices.get(&pos_j).expect("suffix index missing");
+                build_pair_table_with_index(
+                    index,
+                    site_i,
+                    site_j,
+                    val,
+                    &basis.two_s_list,
+                    &basis.coupling_order,
+                    &site_to_pos,
+                    zero_eps,
+                )
             })
             .collect::<Vec<_>>();
 

@@ -1,7 +1,7 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use edu1sces::basis::Basis;
-use edu1sces::examples_util::build_heisenberg_chain;
 use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
 use edu1sces::model::{HeisenbergModel, QuantumModel};
 
@@ -26,17 +26,40 @@ fn benchmark(
     (avg_time_ms, nnz)
 }
 
+/// Generate 1D nearest-neighbor bonds: 0-1-2-...(n-1)
+fn generate_1d_chain_bonds(n: usize) -> HashMap<(usize, usize), f64> {
+    let mut exchange = HashMap::new();
+    for i in 0..n - 1 {
+        exchange.insert((i, i + 1), 1.0);
+    }
+    exchange
+}
+
 fn main() {
-    let n = 16;
-    let two_s = 1; // S = 3/2
+    let n = 20;
+    let two_s = 1;
     let total_sz = 0.0;
     let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
-    let model = build_heisenberg_chain(two_s, n, 1.0, 1.0, 0.0, 0.0);
+    // 1D nearest-neighbor chain
+    let exchange_xy = generate_1d_chain_bonds(n);
+    let exchange_z = exchange_xy.clone();
+
+    let model = HeisenbergModel {
+        num_sites: n,
+        two_s_list: vec![two_s; n],
+        hz_list: vec![0.0; n],
+        d_list: vec![0.0; n],
+        exchange_xy,
+        exchange_z,
+    };
 
     println!("=== make_heisenberg_hamiltonian Benchmark ===");
-    println!("n={}, two_s={}, total_sz={}\n", n, two_s, total_sz);
+    println!(
+        "n={}, two_s={}, total_sz={}, 1D chain (nearest-neighbor)\n",
+        n, two_s, total_sz
+    );
 
     println!("Building basis...");
     let t0 = Instant::now();

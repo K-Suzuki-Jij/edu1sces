@@ -25,29 +25,40 @@ fn benchmark(
     (avg_time_ms, nnz)
 }
 
+/// Generate 1D nearest-neighbor bonds: 0-1-2-...(n-1)
+fn generate_1d_chain_bonds(n: usize) -> HashMap<(usize, usize), f64> {
+    let mut exchange = HashMap::new();
+    for i in 0..n - 1 {
+        exchange.insert((i, i + 1), 1.0);
+    }
+    exchange
+}
+
 fn main() {
-    let n = 16;
+    let n = 20;
     let spin = 0.5;
     let total_s = 0.0;
     let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
-    // Build 1D chain with nearest-neighbor interactions
-    let mut exchange = HashMap::new();
-    for i in 0..n - 1 {
-        exchange.insert((i, i + 1), 1.0);
-    }
+    // 1D nearest-neighbor chain
+    let exchange = generate_1d_chain_bonds(n);
 
     let model = SU2HeisenbergModel::new(vec![spin; n], exchange).unwrap();
 
     println!("=== make_su2_heisenberg_hamiltonian Benchmark ===");
-    println!("n={}, spin={}, total_s={}\n", n, spin, total_s);
+    println!(
+        "n={}, spin={}, total_s={}, 1D chain (nearest-neighbor)\n",
+        n, spin, total_s
+    );
 
-    println!("Building basis...");
+    // Build basis (automatically optimizes coupling order)
+    println!("Building basis (with auto-optimized coupling order)...");
     let t0 = Instant::now();
     let basis = model.build_basis(total_s).unwrap();
     let dt = t0.elapsed();
-    println!("  dim={}, time={:?}\n", basis.dim(), dt);
+    println!("  dim={}, time={:?}", basis.dim(), dt);
+    println!("  coupling_order: {:?}\n", basis.coupling_order);
 
     println!("--- make_su2_heisenberg_hamiltonian ---");
     let mut baseline_time_ms = None;

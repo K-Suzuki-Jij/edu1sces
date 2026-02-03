@@ -14,7 +14,8 @@
       "Bash(python /tmp/test_6j_9j.py:*)",
       "Bash(python /tmp/test_matrix_element.py:*)",
       "Bash(python:*)",
-      "Bash(maturin develop:*)"
+      "Bash(maturin develop:*)",
+      "Bash(ls:*)"
     ]
   }
 }

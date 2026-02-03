@@ -107,7 +107,7 @@ impl SU2HeisenbergModel {
             seen[site] = true;
         }
 
-        // Create two_s_list in coupling order
+        // For basis construction, we need spins in coupling order
         let two_s_in_order: Vec<i32> = coupling_order
             .iter()
             .map(|&site| self.two_s_list[site])
@@ -125,7 +125,7 @@ impl SU2HeisenbergModel {
         if ((sum_two_s - two_s_target) & 1) != 0 {
             return Ok(SU2HeisenbergBasis::new(
                 Vec::new(),
-                two_s_in_order,
+                self.two_s_list.clone(),
                 two_s_target,
                 coupling_order.to_vec(),
             ));
@@ -133,7 +133,7 @@ impl SU2HeisenbergModel {
         if two_s_target > sum_two_s {
             return Ok(SU2HeisenbergBasis::new(
                 Vec::new(),
-                two_s_in_order,
+                self.two_s_list.clone(),
                 two_s_target,
                 coupling_order.to_vec(),
             ));
@@ -146,14 +146,14 @@ impl SU2HeisenbergModel {
                 let state = vec![two_s1 as u8];
                 return Ok(SU2HeisenbergBasis::new(
                     vec![state],
-                    two_s_in_order,
+                    self.two_s_list.clone(),
                     two_s_target,
                     coupling_order.to_vec(),
                 ));
             }
             return Ok(SU2HeisenbergBasis::new(
                 Vec::new(),
-                two_s_in_order,
+                self.two_s_list.clone(),
                 two_s_target,
                 coupling_order.to_vec(),
             ));
@@ -178,7 +178,7 @@ impl SU2HeisenbergModel {
         if !can_reach(two_s1, suffix_sum_two_s[1], two_s_target) {
             return Ok(SU2HeisenbergBasis::new(
                 Vec::new(),
-                two_s_in_order,
+                self.two_s_list.clone(),
                 two_s_target,
                 coupling_order.to_vec(),
             ));
@@ -253,7 +253,7 @@ impl SU2HeisenbergModel {
 
         Ok(SU2HeisenbergBasis::new(
             basis,
-            two_s_in_order,
+            self.two_s_list.clone(),
             two_s_target,
             coupling_order.to_vec(),
         ))
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn build_basis_with_order_reorders_spins() {
+    fn build_basis_with_order_keeps_site_order() {
         // Create a model with specific spins
         let m = SU2HeisenbergModel {
             num_sites: 3,
@@ -650,8 +650,8 @@ mod tests {
         let order = vec![2, 1, 0];
         let basis = m.build_basis_with_order(0.5, &order).unwrap();
 
-        // Check two_s_list is reordered (in coupling order)
-        assert_eq!(basis.two_s_list, vec![3, 2, 1]); // S_2=3/2, S_1=1, S_0=1/2
+        // two_s_list stays in original site order (NOT coupling order)
+        assert_eq!(basis.two_s_list, vec![1, 2, 3]); // same as model
         assert_eq!(basis.coupling_order, vec![2, 1, 0]);
     }
 
