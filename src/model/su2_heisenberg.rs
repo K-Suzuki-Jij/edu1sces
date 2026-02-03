@@ -328,12 +328,6 @@ impl SU2HeisenbergModel {
     /// Uses Cuthill-McKee algorithm to find an ordering that minimizes the
     /// bandwidth of the interaction graph, which reduces the number of swap
     /// operations needed in the Hamiltonian construction.
-    ///
-    /// Use this with `build_basis_with_order` for optimal performance:
-    /// ```ignore
-    /// let order = model.optimal_coupling_order();
-    /// let basis = model.build_basis_with_order(total_s, &order)?;
-    /// ```
     pub fn optimal_coupling_order(&self) -> Vec<usize> {
         let bonds: Vec<(usize, usize)> = self.exchange.keys().copied().collect();
         Self::cuthill_mckee_order(self.num_sites, &bonds)

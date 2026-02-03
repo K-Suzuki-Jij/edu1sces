@@ -157,9 +157,18 @@ fn build_pair_plan(
         });
     }
 
+    // After swaps, position j-1 has the spin from original position i,
+    // and position j has the spin from original position j.
+    // But if pos_i > pos_j, we swapped i and j, so the order reverses.
+    let (two_si, two_sj) = if pos_i < pos_j {
+        (two_s_list[site_i], two_s_list[site_j])
+    } else {
+        (two_s_list[site_j], two_s_list[site_i])
+    };
+
     PairPlan {
-        two_si: two_s_list[site_i],
-        two_sj: two_s_list[site_j],
+        two_si,
+        two_sj,
         adjacent_pos: j - 1,
         forward,
         reverse,
@@ -741,6 +750,7 @@ mod tests {
     use crate::blas::lapack_dsyev;
     use crate::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
     use crate::model::{HeisenbergModel, QuantumModel};
+    use proptest::prelude::*;
 
     #[test]
     fn su2_ham_two_spin_half_singlet_triplet() {
@@ -749,149 +759,19 @@ mod tests {
 
         let model = SU2HeisenbergModel::new(vec![0.5, 0.5], exchange).unwrap();
 
+        // Singlet: E = -3/4
         let basis_singlet = model.build_basis(0.0).unwrap();
         let h_singlet = make_su2_heisenberg_hamiltonian(&basis_singlet, &model, 1).unwrap();
         assert_eq!(h_singlet.row_dim, 1);
         assert_eq!(h_singlet.col_dim, 1);
         assert!((h_singlet.vals[0] - (-0.75)).abs() < 1e-10);
 
+        // Triplet: E = 1/4
         let basis_triplet = model.build_basis(1.0).unwrap();
         let h_triplet = make_su2_heisenberg_hamiltonian(&basis_triplet, &model, 1).unwrap();
         assert_eq!(h_triplet.row_dim, 1);
         assert_eq!(h_triplet.col_dim, 1);
         assert!((h_triplet.vals[0] - 0.25).abs() < 1e-10);
-    }
-
-    fn get_ground_state_energy(h: &CsrMatrix) -> f64 {
-        let n = h.row_dim;
-        if n == 0 {
-            return f64::INFINITY;
-        }
-        let mut a_work = vec![0.0; n * n];
-        let mut w_work = vec![0.0; n];
-        let mut work = vec![0.0; 3 * n];
-        lapack_dsyev(h, &mut a_work, &mut w_work, &mut work).unwrap();
-        w_work[0]
-    }
-
-    #[test]
-    fn compare_su2_u1_six_sites_spin_half_long_range() {
-        let n = 6;
-        let spin = 0.5;
-        let two_s = 1;
-
-        let mut exchange_su2 = HashMap::new();
-        let mut exchange_xy = HashMap::new();
-        let mut exchange_z = HashMap::new();
-
-        let pairs = [
-            ((0, 1), 1.0),
-            ((1, 2), 0.9),
-            ((2, 3), 1.1),
-            ((3, 4), 0.8),
-            ((4, 5), 1.2),
-            ((0, 2), 0.5),
-            ((1, 3), 0.4),
-            ((2, 4), 0.6),
-            ((3, 5), 0.5),
-            ((0, 3), 0.3),
-            ((1, 4), 0.35),
-            ((2, 5), 0.25),
-            ((0, 4), 0.2),
-            ((1, 5), 0.15),
-            ((0, 5), 0.1),
-        ];
-        for ((i, j), val) in pairs {
-            exchange_su2.insert((i, j), val);
-            exchange_xy.insert((i, j), val);
-            exchange_z.insert((i, j), val);
-        }
-
-        let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
-
-        let u1_model = HeisenbergModel {
-            num_sites: n,
-            two_s_list: vec![two_s; n],
-            hz_list: vec![0.0; n],
-            d_list: vec![0.0; n],
-            exchange_xy,
-            exchange_z,
-        };
-
-        let u1_basis = u1_model.build_basis(&[0]).unwrap();
-        let u1_ham = make_heisenberg_hamiltonian(&u1_basis, &u1_model, 1).unwrap();
-        let u1_gs = get_ground_state_energy(&u1_ham);
-
-        let su2_basis = su2_model.build_basis(0.0).unwrap();
-        let su2_ham = make_su2_heisenberg_hamiltonian(&su2_basis, &su2_model, 1).unwrap();
-        let su2_gs = get_ground_state_energy(&su2_ham);
-
-        assert!(
-            (u1_gs - su2_gs).abs() < 1e-8,
-            "Ground state mismatch: U(1)={}, SU(2)={}",
-            u1_gs,
-            su2_gs
-        );
-    }
-
-    #[test]
-    fn compare_su2_u1_six_sites_spin_one_long_range() {
-        let n = 6;
-        let spin = 1.0;
-        let two_s = 2;
-
-        let mut exchange_su2 = HashMap::new();
-        let mut exchange_xy = HashMap::new();
-        let mut exchange_z = HashMap::new();
-
-        let pairs = [
-            ((0, 1), 1.0),
-            ((1, 2), 0.9),
-            ((2, 3), 1.1),
-            ((3, 4), 0.8),
-            ((4, 5), 1.2),
-            ((0, 2), 0.5),
-            ((1, 3), 0.4),
-            ((2, 4), 0.6),
-            ((3, 5), 0.5),
-            ((0, 3), 0.3),
-            ((1, 4), 0.35),
-            ((2, 5), 0.25),
-            ((0, 4), 0.2),
-            ((1, 5), 0.15),
-            ((0, 5), 0.1),
-        ];
-        for ((i, j), val) in pairs {
-            exchange_su2.insert((i, j), val);
-            exchange_xy.insert((i, j), val);
-            exchange_z.insert((i, j), val);
-        }
-
-        let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
-
-        let u1_model = HeisenbergModel {
-            num_sites: n,
-            two_s_list: vec![two_s; n],
-            hz_list: vec![0.0; n],
-            d_list: vec![0.0; n],
-            exchange_xy,
-            exchange_z,
-        };
-
-        let u1_basis = u1_model.build_basis(&[0]).unwrap();
-        let u1_ham = make_heisenberg_hamiltonian(&u1_basis, &u1_model, 1).unwrap();
-        let u1_gs = get_ground_state_energy(&u1_ham);
-
-        let su2_basis = su2_model.build_basis(0.0).unwrap();
-        let su2_ham = make_su2_heisenberg_hamiltonian(&su2_basis, &su2_model, 1).unwrap();
-        let su2_gs = get_ground_state_energy(&su2_ham);
-
-        assert!(
-            (u1_gs - su2_gs).abs() < 1e-8,
-            "Ground state mismatch: U(1)={}, SU(2)={}",
-            u1_gs,
-            su2_gs
-        );
     }
 
     fn get_all_eigenvalues(h: &CsrMatrix) -> Vec<f64> {
@@ -906,188 +786,120 @@ mod tests {
         w_work
     }
 
-    #[test]
-    fn compare_all_eigenvalues_six_sites_spin_half() {
-        let n = 6;
-        let spin = 0.5;
-        let two_s = 1;
-
-        let pairs = [
-            ((0, 1), 1.0),
-            ((1, 2), 0.9),
-            ((2, 3), 1.1),
-            ((3, 4), 0.8),
-            ((4, 5), 1.2),
-            ((0, 2), 0.5),
-            ((1, 3), 0.4),
-            ((2, 4), 0.6),
-            ((3, 5), 0.5),
-            ((0, 3), 0.3),
-            ((1, 4), 0.35),
-            ((2, 5), 0.25),
-            ((0, 4), 0.2),
-            ((1, 5), 0.15),
-            ((0, 5), 0.1),
-        ];
-
-        let mut exchange_su2 = HashMap::new();
-        let mut exchange_xy = HashMap::new();
-        let mut exchange_z = HashMap::new();
-        for ((i, j), val) in pairs {
-            exchange_su2.insert((i, j), val);
-            exchange_xy.insert((i, j), val);
-            exchange_z.insert((i, j), val);
-        }
-
-        let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
-        let u1_model = HeisenbergModel {
-            num_sites: n,
-            two_s_list: vec![two_s; n],
-            hz_list: vec![0.0; n],
-            d_list: vec![0.0; n],
-            exchange_xy,
-            exchange_z,
-        };
-
-        let mut u1_all_eigs = Vec::new();
-        for sz2 in (-(n as i32)..=(n as i32)).step_by(2) {
-            let basis = u1_model.build_basis(&[sz2]).unwrap();
-            if basis.dim() == 0 {
-                continue;
+    fn mixed_spins_strategy(n: usize) -> impl Strategy<Value = (Vec<f64>, Vec<i32>)> {
+        // 2S = 1, 2, 3, 4 (S = 1/2, 1, 3/2, 2)
+        prop::collection::vec(1i32..=4i32, n).prop_map(move |two_s_vals| {
+            let mut spins = Vec::with_capacity(n);
+            let mut two_s_list = Vec::with_capacity(n);
+            let mut sum_two_s = 0i32;
+            for &two_s in &two_s_vals {
+                spins.push(two_s as f64 / 2.0);
+                two_s_list.push(two_s);
+                sum_two_s += two_s;
             }
-            let ham = make_heisenberg_hamiltonian(&basis, &u1_model, 1).unwrap();
-            u1_all_eigs.extend(get_all_eigenvalues(&ham));
-        }
-
-        let mut su2_all_eigs = Vec::new();
-        for s2 in (0..=(n as i32)).step_by(2) {
-            let s = s2 as f64 / 2.0;
-            let basis = su2_model.build_basis(s).unwrap();
-            if basis.dim() == 0 {
-                continue;
-            }
-            let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
-            let eigs = get_all_eigenvalues(&ham);
-            let degeneracy = (s2 + 1) as usize;
-            for e in eigs {
-                for _ in 0..degeneracy {
-                    su2_all_eigs.push(e);
+            // Ensure even parity for Sz=0 sector
+            if sum_two_s % 2 != 0 && n > 0 {
+                // Flip parity by changing first spin's 2S by 1
+                if two_s_list[0] < 4 {
+                    two_s_list[0] += 1;
+                } else {
+                    two_s_list[0] -= 1;
                 }
+                spins[0] = two_s_list[0] as f64 / 2.0;
             }
-        }
-
-        u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-        assert_eq!(
-            u1_all_eigs.len(),
-            su2_all_eigs.len(),
-            "Eigenvalue count mismatch: U(1)={}, SU(2)={}",
-            u1_all_eigs.len(),
-            su2_all_eigs.len()
-        );
-
-        for (i, (u1_e, su2_e)) in u1_all_eigs.iter().zip(&su2_all_eigs).enumerate() {
-            assert!(
-                (u1_e - su2_e).abs() < 1e-8,
-                "Eigenvalue {} mismatch: U(1)={}, SU(2)={}",
-                i,
-                u1_e,
-                su2_e
-            );
-        }
+            (spins, two_s_list)
+        })
     }
 
-    #[test]
-    fn compare_all_eigenvalues_six_sites_spin_one() {
-        let n = 6;
-        let spin = 1.0;
-        let two_s = 2;
+    fn exchange_values_strategy(n: usize) -> impl Strategy<Value = Vec<f64>> {
+        let num_pairs = n * (n - 1) / 2;
+        prop::collection::vec(0.1f64..1.2f64, num_pairs)
+    }
 
-        let pairs = [
-            ((0, 1), 1.0),
-            ((1, 2), 0.9),
-            ((2, 3), 1.1),
-            ((3, 4), 0.8),
-            ((4, 5), 1.2),
-            ((0, 2), 0.5),
-            ((1, 3), 0.4),
-            ((2, 4), 0.6),
-            ((3, 5), 0.5),
-            ((0, 3), 0.3),
-            ((1, 4), 0.35),
-            ((2, 5), 0.25),
-            ((0, 4), 0.2),
-            ((1, 5), 0.15),
-            ((0, 5), 0.1),
-        ];
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
 
-        let mut exchange_su2 = HashMap::new();
-        let mut exchange_xy = HashMap::new();
-        let mut exchange_z = HashMap::new();
-        for ((i, j), val) in pairs {
-            exchange_su2.insert((i, j), val);
-            exchange_xy.insert((i, j), val);
-            exchange_z.insert((i, j), val);
-        }
+        #[test]
+        fn compare_all_eigenvalues(
+            (spins, two_s_list) in mixed_spins_strategy(4),
+            exchange_vals in exchange_values_strategy(4),
+        ) {
+            let n = 4;
+            let mut exchange_su2 = HashMap::new();
+            let mut exchange_xy = HashMap::new();
+            let mut exchange_z = HashMap::new();
 
-        let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
-        let u1_model = HeisenbergModel {
-            num_sites: n,
-            two_s_list: vec![two_s; n],
-            hz_list: vec![0.0; n],
-            d_list: vec![0.0; n],
-            exchange_xy,
-            exchange_z,
-        };
-
-        let mut u1_all_eigs = Vec::new();
-        for sz2 in (-(n as i32 * two_s)..=(n as i32 * two_s)).step_by(2) {
-            let basis = u1_model.build_basis(&[sz2]).unwrap();
-            if basis.dim() == 0 {
-                continue;
-            }
-            let ham = make_heisenberg_hamiltonian(&basis, &u1_model, 1).unwrap();
-            u1_all_eigs.extend(get_all_eigenvalues(&ham));
-        }
-
-        let mut su2_all_eigs = Vec::new();
-        let max_s2 = n as i32 * two_s;
-        for s2 in (0..=max_s2).step_by(2) {
-            let s = s2 as f64 / 2.0;
-            let basis = su2_model.build_basis(s).unwrap();
-            if basis.dim() == 0 {
-                continue;
-            }
-            let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
-            let eigs = get_all_eigenvalues(&ham);
-            let degeneracy = (s2 + 1) as usize;
-            for e in eigs {
-                for _ in 0..degeneracy {
-                    su2_all_eigs.push(e);
+            let mut idx = 0;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let val = exchange_vals[idx];
+                    exchange_su2.insert((i, j), val);
+                    exchange_xy.insert((i, j), val);
+                    exchange_z.insert((i, j), val);
+                    idx += 1;
                 }
             }
-        }
 
-        u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let su2_model = SU2HeisenbergModel::new(spins.clone(), exchange_su2).unwrap();
+            let u1_model = HeisenbergModel {
+                num_sites: n,
+                two_s_list: two_s_list.clone(),
+                hz_list: vec![0.0; n],
+                d_list: vec![0.0; n],
+                exchange_xy,
+                exchange_z,
+            };
 
-        assert_eq!(
-            u1_all_eigs.len(),
-            su2_all_eigs.len(),
-            "Eigenvalue count mismatch: U(1)={}, SU(2)={}",
-            u1_all_eigs.len(),
-            su2_all_eigs.len()
-        );
+            let max_sz2: i32 = two_s_list.iter().sum();
+            let mut u1_all_eigs = Vec::new();
+            for sz2 in (-max_sz2..=max_sz2).step_by(2) {
+                let basis = u1_model.build_basis(&[sz2]).unwrap();
+                if basis.dim() == 0 {
+                    continue;
+                }
+                let ham = make_heisenberg_hamiltonian(&basis, &u1_model, 1).unwrap();
+                u1_all_eigs.extend(get_all_eigenvalues(&ham));
+            }
 
-        for (i, (u1_e, su2_e)) in u1_all_eigs.iter().zip(&su2_all_eigs).enumerate() {
-            assert!(
-                (u1_e - su2_e).abs() < 1e-8,
-                "Eigenvalue {} mismatch: U(1)={}, SU(2)={}",
-                i,
-                u1_e,
-                su2_e
+            let mut su2_all_eigs = Vec::new();
+            for s2 in (0..=max_sz2).step_by(2) {
+                let s = s2 as f64 / 2.0;
+                let basis = su2_model.build_basis(s).unwrap();
+                if basis.dim() == 0 {
+                    continue;
+                }
+                let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
+                let eigs = get_all_eigenvalues(&ham);
+                let degeneracy = (s2 + 1) as usize;
+                for e in eigs {
+                    for _ in 0..degeneracy {
+                        su2_all_eigs.push(e);
+                    }
+                }
+            }
+
+            u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+            prop_assert_eq!(
+                u1_all_eigs.len(),
+                su2_all_eigs.len(),
+                "Eigenvalue count mismatch: U(1)={}, SU(2)={}, spins={:?}",
+                u1_all_eigs.len(),
+                su2_all_eigs.len(),
+                spins
             );
+
+            for (i, (u1_e, su2_e)) in u1_all_eigs.iter().zip(&su2_all_eigs).enumerate() {
+                prop_assert!(
+                    (u1_e - su2_e).abs() < 1e-8,
+                    "Eigenvalue {} mismatch: U(1)={}, SU(2)={}, spins={:?}",
+                    i,
+                    u1_e,
+                    su2_e,
+                    spins
+                );
+            }
         }
     }
 }
