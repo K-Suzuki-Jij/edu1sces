@@ -1,8 +1,10 @@
 use anyhow::Result;
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use std::time::Instant;
 
 use crate::blas::{inverse_iteration, lanczos, InverseIterationLog, LanczosLog, LanczosParameters};
+use crate::utility::rayon_pool::build_pool;
 use crate::hamiltonian::su2_heisenberg_hamiltonian::make_su2_heisenberg_hamiltonian;
 use crate::model::SU2HeisenbergModel;
 use crate::model::operator::SpinOperator;
@@ -203,6 +205,91 @@ pub fn solve_su2_heisenberg(
 
 #[pymethods]
 impl SU2SolverResult {
+    pub fn expectation_onsite(
+        &mut self,
+        op: SpinOperator,
+        site: usize,
+        m_total: f64,
+        num_threads: usize,
+        state_index: usize,
+    ) -> Result<f64> {
+        if state_index >= self.eigenvectors.len() {
+            anyhow::bail!(
+                "state_index {} out of range (num_states = {})",
+                state_index,
+                self.eigenvectors.len()
+            );
+        }
+
+        let two_s = self.basis_info.two_s_current;
+        let two_m = (2.0 * m_total).round() as i32;
+        if (2.0 * m_total - (two_m as f64)).abs() > 1e-12 {
+            anyhow::bail!("m_total must be integer or half-integer (got {})", m_total);
+        }
+        if two_m.abs() > two_s {
+            anyhow::bail!(
+                "m_total out of range (|M| = {} > S = {})",
+                m_total,
+                self.total_s
+            );
+        }
+        if ((two_s - two_m) & 1) != 0 {
+            anyhow::bail!("m_total parity does not match total_s");
+        }
+
+        let op_parts = decompose_spin_operator(op);
+
+        self.basis_info.ensure_basis_exists(two_s)?;
+        let plan = {
+            let basis = self.basis_info.get_basis(two_s)?;
+            build_single_plan(
+                &basis.two_s_list,
+                &basis.coupling_order,
+                &basis.site_to_pos,
+                site,
+            )
+        };
+
+        let mut total = 0.0;
+
+        let pool = build_pool(num_threads)?;
+
+        // Only q=0 component contributes to <ψ|O|ψ> (same M sector)
+        for &(q, coeff) in op_parts.iter() {
+            if q != 0 {
+                continue;
+            }
+
+            let basis = self.basis_info.get_basis(two_s)?;
+
+            let vec_out = apply_local_spin_op(
+                basis,
+                basis,
+                &self.eigenvectors[state_index],
+                site,
+                &plan,
+                two_s,
+                two_s,
+                two_m,
+                q,
+                coeff,
+                num_threads,
+            )?;
+
+            // Compute <ψ|O|ψ> = Σ_i ψ_i * (O|ψ⟩)_i (parallel)
+            let eigenvec = &self.eigenvectors[state_index];
+            let partial: f64 = pool.install(|| {
+                vec_out
+                    .par_iter()
+                    .map(|(idx, v)| eigenvec[*idx] * v)
+                    .sum()
+            });
+            total += partial;
+        }
+
+        Ok(total)
+    }
+
     pub fn correlation_function(
         &mut self,
         op1: SpinOperator,
@@ -259,6 +346,7 @@ impl SU2SolverResult {
             (plan1, plan2)
         };
 
+        let pool = build_pool(num_threads)?;
         let mut total = 0.0;
 
         let possible_two_s_out = [two_s - 2, two_s, two_s + 2];
@@ -330,12 +418,12 @@ impl SU2SolverResult {
                     } else {
                         (&vec2, &vec1)
                     };
-                    let mut partial = 0.0;
-                    for (idx, v) in small.iter() {
-                        if let Some(w) = large.get(idx) {
-                            partial += v * w;
-                        }
-                    }
+                    let partial: f64 = pool.install(|| {
+                        small
+                            .par_iter()
+                            .filter_map(|(idx, v)| large.get(idx).map(|w| v * w))
+                            .sum()
+                    });
                     total += partial;
                 }
             }
@@ -473,6 +561,78 @@ mod tests {
         // Triplet: E = 1/4
         let result = solve_su2_heisenberg(&model, 1.0, &make_params()).unwrap();
         assert!((result.energies[0] - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_expectation_onsite_sz_u1_comparison() {
+        let n = 4;
+        let mut exchange_xy = HashMap::new();
+        let mut exchange_z = HashMap::new();
+        let mut exchange_su2 = HashMap::new();
+        for i in 0..n - 1 {
+            exchange_xy.insert((i, i + 1), 1.0);
+            exchange_z.insert((i, i + 1), 1.0);
+            exchange_su2.insert((i, i + 1), 1.0);
+        }
+
+        let u1_model = HeisenbergModel::new(
+            vec![0.5; n],
+            vec![0.0; n],
+            vec![0.0; n],
+            exchange_xy,
+            exchange_z,
+        )
+        .unwrap();
+
+        let su2_model = SU2HeisenbergModel::new(vec![0.5; n], exchange_su2).unwrap();
+
+        let params = make_params();
+        let mut u1_result = solve_heisenberg(&u1_model, 0.0, &params).unwrap();
+        let mut su2_result = solve_su2_heisenberg(&su2_model, 0.0, &params).unwrap();
+
+        // Compare <Sz_i> for each site
+        for site in 0..n {
+            let sz_op = u1_model.make_local_op_sz(site).unwrap();
+            let u1_exp = u1_result.expectation_onsite(&sz_op, site, 1, 0).unwrap();
+            let su2_exp = su2_result
+                .expectation_onsite(SpinOperator::Sz, site, 0.0, 1, 0)
+                .unwrap();
+            assert!(
+                (u1_exp - su2_exp).abs() < 1e-8,
+                "site {}: u1={} su2={}",
+                site,
+                u1_exp,
+                su2_exp
+            );
+        }
+    }
+
+    #[test]
+    fn test_expectation_onsite_sz_triplet() {
+        let mut exchange = HashMap::new();
+        exchange.insert((0, 1), 1.0);
+        let model = SU2HeisenbergModel::new(vec![0.5, 0.5], exchange).unwrap();
+
+        // Triplet S=1, M=1: <Sz_0> = <Sz_1> = 0.5
+        let mut result = solve_su2_heisenberg(&model, 1.0, &make_params()).unwrap();
+        let sz0 = result
+            .expectation_onsite(SpinOperator::Sz, 0, 1.0, 1, 0)
+            .unwrap();
+        let sz1 = result
+            .expectation_onsite(SpinOperator::Sz, 1, 1.0, 1, 0)
+            .unwrap();
+        assert!((sz0 - 0.5).abs() < 1e-8, "sz0={}", sz0);
+        assert!((sz1 - 0.5).abs() < 1e-8, "sz1={}", sz1);
+
+        // Triplet S=1, M=0: <Sz_0> = <Sz_1> = 0
+        let sz0_m0 = result
+            .expectation_onsite(SpinOperator::Sz, 0, 0.0, 1, 0)
+            .unwrap();
+        let sz1_m0 = result
+            .expectation_onsite(SpinOperator::Sz, 1, 0.0, 1, 0)
+            .unwrap();
+        assert!(sz0_m0.abs() < 1e-8, "sz0_m0={}", sz0_m0);
+        assert!(sz1_m0.abs() < 1e-8, "sz1_m0={}", sz1_m0);
     }
 
     #[test]
