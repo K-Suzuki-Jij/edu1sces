@@ -21,6 +21,7 @@ fn core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<model::su2_heisenberg::SU2HeisenbergModel>()?;
     m.add_class::<blas::CsrMatrix>()?;
     m.add_class::<solver::SolverResult>()?;
+    m.add_class::<solver::SU2SolverResult>()?;
     m.add_class::<solver::SolverParameters>()?;
     m.add_class::<blas::InverseIterationParameters>()?;
     m.add_class::<blas::ConjugateGradientParameters>()?;
@@ -37,6 +38,10 @@ fn core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         crate::solver::solve_kondo_lattice::solve_kondo_lattice,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::solver::solve_su2_heisenberg::solve_su2_heisenberg,
         m
     )?)?;
     Ok(())
