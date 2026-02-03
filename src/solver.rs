@@ -2,6 +2,7 @@ pub mod solve_heisenberg;
 pub mod solve_hubbard;
 pub mod solve_kondo_lattice;
 pub mod solve_su2_heisenberg;
+pub mod su2_correlation;
 pub mod solver_core;
 pub mod solver_types;
 
