@@ -7,6 +7,7 @@ use crate::basis::SU2HeisenbergBasis;
 use crate::blas::{CsrMatrix, MATRIX_ZERO_EPS};
 use crate::model::SU2HeisenbergModel;
 use crate::utility::rayon_pool::with_pool;
+use crate::utility::sixj_table::{get_cached_sixj_table, Sixj6Table};
 use rayon::prelude::*;
 use wigner_symbols::Wigner6j;
 
@@ -64,101 +65,6 @@ struct SuffixIndex {
 thread_local! {
     static SWAP_CACHE: RefCell<AHashMap<SwapKey, Arc<[(i32, f64)]>>> =
         RefCell::new(AHashMap::new());
-    static SIXJ_TABLE_CACHE: RefCell<AHashMap<(i32, i32, i32), Arc<Sixj6Table>>> =
-        RefCell::new(AHashMap::new());
-}
-
-fn get_cached_table(a: i32, b: i32, max_two_j: i32) -> Arc<Sixj6Table> {
-    SIXJ_TABLE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let key = (a, b, max_two_j);
-        if let Some(table) = cache.get(&key) {
-            return Arc::clone(table);
-        }
-        let table = Arc::new(Sixj6Table::new(a, b, max_two_j));
-        cache.insert(key, Arc::clone(&table));
-        table
-    })
-}
-
-/// Dense lookup table for 6j symbols with fixed a, b values.
-/// Stores {x, a, j1; b, j2, t} indexed as [x][j1][j2][t/2].
-struct Sixj6Table {
-    max_j: usize,
-    max_t_idx: usize, // max_t / 2
-    data: Vec<f64>,   // Flattened 4D array
-}
-
-impl Sixj6Table {
-    fn new(a: i32, b: i32, max_j: i32) -> Self {
-        let max_j = max_j as usize;
-        let max_t = (a + b) as usize;
-        let max_t_idx = max_t / 2;
-        let size = (max_j + 1) * (max_j + 1) * (max_j + 1) * (max_t_idx + 1);
-        let mut data = vec![0.0; size];
-
-        for x in 0..=max_j {
-            for j1 in 0..=max_j {
-                for j2 in 0..=max_j {
-                    for t_idx in 0..=max_t_idx {
-                        let t = (t_idx * 2) as i32;
-                        let idx = Self::index_impl(x, j1, j2, t_idx, max_j, max_t_idx);
-                        data[idx] = f64::from(
-                            Wigner6j {
-                                tj1: x as i32,
-                                tj2: a,
-                                tj3: j1 as i32,
-                                tj4: b,
-                                tj5: j2 as i32,
-                                tj6: t,
-                            }
-                            .value(),
-                        );
-                    }
-                }
-            }
-        }
-
-        Self {
-            max_j,
-            max_t_idx,
-            data,
-        }
-    }
-
-    #[inline]
-    fn index_impl(
-        x: usize,
-        j1: usize,
-        j2: usize,
-        t_idx: usize,
-        max_j: usize,
-        max_t_idx: usize,
-    ) -> usize {
-        ((x * (max_j + 1) + j1) * (max_j + 1) + j2) * (max_t_idx + 1) + t_idx
-    }
-
-    #[inline]
-    fn get(&self, x: i32, j1: i32, j2: i32, t: i32) -> f64 {
-        let t_idx = (t / 2) as usize;
-        let idx = Self::index_impl(
-            x as usize,
-            j1 as usize,
-            j2 as usize,
-            t_idx,
-            self.max_j,
-            self.max_t_idx,
-        );
-        self.data[idx]
-    }
-}
-
-fn phase_from_half_integer(sum_two: i32) -> f64 {
-    if ((sum_two / 2) & 1) != 0 {
-        -1.0
-    } else {
-        1.0
-    }
 }
 
 /// Compute the adjacent pair matrix elements for S_i · S_j at position `adjacent_pos`.
@@ -312,14 +218,13 @@ fn build_adjacent_pair_matrix(
     }
 }
 
-fn swap_coeffs_with_table(
+fn swap_coeffs(
     x: i32,
     j_k: i32,
     j_k1: i32,
     a: i32,
     b: i32,
-    table1: &Sixj6Table,
-    table2: &Sixj6Table,
+    tables: Option<(&Sixj6Table, &Sixj6Table)>,
     zero_eps: f64,
 ) -> Arc<[(i32, f64)]> {
     let key = SwapKey { x, j_k, j_k1, a, b };
@@ -351,90 +256,40 @@ fn swap_coeffs_with_table(
             let mut t = t_start;
             while t <= max_t {
                 // sixj1: {x, a, j_k; b, j_k1, t}
-                let s1 = table1.get(x, j_k, j_k1, t);
-                if s1.abs() >= zero_eps {
-                    // sixj2: {x, b, j_kp; a, j_k1, t}
-                    let s2 = table2.get(x, j_kp, j_k1, t);
-                    if s2.abs() >= zero_eps {
-                        let phase = phase_from_half_integer(a + b - t);
-                        let weight = (t + 1) as f64;
-                        sum += phase * weight * s1 * s2;
-                    }
-                }
-                t += 2;
-            }
-
-            if sum.abs() >= zero_eps {
-                let norm = ((j_k + 1) as f64 * (j_kp + 1) as f64).sqrt();
-                let c = norm * sum;
-                if c.abs() >= zero_eps {
-                    out.push((j_kp, c));
-                }
-            }
-
-            j_kp += 2;
-        }
-
-        let out: Arc<[(i32, f64)]> = out.into();
-        cache.insert(key, Arc::clone(&out));
-        out
-    })
-}
-
-fn swap_coeffs(x: i32, j_k: i32, j_k1: i32, a: i32, b: i32, zero_eps: f64) -> Arc<[(i32, f64)]> {
-    let key = SwapKey { x, j_k, j_k1, a, b };
-
-    SWAP_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(v) = cache.get(&key) {
-            return Arc::clone(v);
-        }
-
-        let mut out = Vec::new();
-        let min_j = (x - b).abs();
-        let max_j = x + b;
-
-        let mut j_kp = min_j;
-        if ((j_kp + x + b) & 1) != 0 {
-            j_kp += 1;
-        }
-
-        let min_t = (a - b).abs();
-        let max_t = a + b;
-        let mut t_start = min_t;
-        if ((t_start + a + b) & 1) != 0 {
-            t_start += 1;
-        }
-
-        while j_kp <= max_j {
-            let mut sum = 0.0;
-            let mut t = t_start;
-            while t <= max_t {
-                let s1 = f64::from(
-                    Wigner6j {
-                        tj1: x,
-                        tj2: a,
-                        tj3: j_k,
-                        tj4: b,
-                        tj5: j_k1,
-                        tj6: t,
-                    }
-                    .value(),
-                );
-                if s1.abs() >= zero_eps {
-                    let s2 = f64::from(
+                let s1 = if let Some((table1, _)) = tables {
+                    table1.get(x, j_k, j_k1, t)
+                } else {
+                    f64::from(
                         Wigner6j {
                             tj1: x,
-                            tj2: b,
-                            tj3: j_kp,
-                            tj4: a,
+                            tj2: a,
+                            tj3: j_k,
+                            tj4: b,
                             tj5: j_k1,
                             tj6: t,
                         }
                         .value(),
-                    );
+                    )
+                };
+                if s1.abs() >= zero_eps {
+                    // sixj2: {x, b, j_kp; a, j_k1, t}
+                    let s2 = if let Some((_, table2)) = tables {
+                        table2.get(x, j_kp, j_k1, t)
+                    } else {
+                        f64::from(
+                            Wigner6j {
+                                tj1: x,
+                                tj2: b,
+                                tj3: j_kp,
+                                tj4: a,
+                                tj5: j_k1,
+                                tj6: t,
+                            }
+                            .value(),
+                        )
+                    };
                     if s2.abs() >= zero_eps {
-                        let phase = phase_from_half_integer(a + b - t);
+                        let phase = 1.0 - 2.0 * (((a + b - t) / 2) & 1) as f64;
                         let weight = (t + 1) as f64;
                         sum += phase * weight * s1 * s2;
                     }
@@ -503,82 +358,13 @@ fn build_pair_plan(n: usize, two_s_list: &[i32], i: usize, j: usize) -> PairPlan
     }
 }
 
-fn build_swap_matrix_with_table(
-    prefixes: &[Vec<u8>],
-    prefix_map: &AHashMap<Vec<u8>, usize>,
-    pos: usize,
-    a: i32,
-    b: i32,
-    table1: &Sixj6Table,
-    table2: &Sixj6Table,
-    zero_eps: f64,
-) -> CsrMatrix {
-    let dim = prefixes.len();
-
-    // Reusable buffer to avoid allocations
-    let prefix_len = if prefixes.is_empty() {
-        0
-    } else {
-        prefixes[0].len()
-    };
-    let mut new_prefix = vec![0u8; prefix_len];
-
-    let mut rows = Vec::with_capacity(dim + 1);
-    let mut cols = Vec::new();
-    let mut vals = Vec::new();
-    rows.push(0);
-
-    for prefix in prefixes.iter() {
-        if pos == 0 {
-            let j1 = prefix[1] as i32;
-            let phase = phase_from_half_integer(a + b - j1);
-            new_prefix.copy_from_slice(prefix);
-            new_prefix[0] = b as u8;
-            if let Some(&nid) = prefix_map.get(&new_prefix) {
-                if phase.abs() >= zero_eps {
-                    cols.push(nid);
-                    vals.push(phase);
-                }
-            }
-            rows.push(cols.len());
-            continue;
-        }
-
-        let x = prefix[pos - 1] as i32;
-        let j_k = prefix[pos] as i32;
-        let j_k1 = prefix[pos + 1] as i32;
-        let coeffs = swap_coeffs_with_table(x, j_k, j_k1, a, b, table1, table2, zero_eps);
-
-        new_prefix.copy_from_slice(prefix);
-        let original_val = new_prefix[pos];
-        for &(j_kp, c) in coeffs.iter() {
-            new_prefix[pos] = j_kp as u8;
-            if let Some(&nid) = prefix_map.get(&new_prefix) {
-                if c.abs() >= zero_eps {
-                    cols.push(nid);
-                    vals.push(c);
-                }
-            }
-        }
-        new_prefix[pos] = original_val;
-        rows.push(cols.len());
-    }
-
-    CsrMatrix {
-        row_dim: dim,
-        col_dim: dim,
-        rows,
-        cols,
-        vals,
-    }
-}
-
 fn build_swap_matrix(
     prefixes: &[Vec<u8>],
     prefix_map: &AHashMap<Vec<u8>, usize>,
     pos: usize,
     a: i32,
     b: i32,
+    tables: Option<(&Sixj6Table, &Sixj6Table)>,
     zero_eps: f64,
 ) -> CsrMatrix {
     let dim = prefixes.len();
@@ -599,7 +385,7 @@ fn build_swap_matrix(
     for prefix in prefixes.iter() {
         if pos == 0 {
             let j1 = prefix[1] as i32;
-            let phase = phase_from_half_integer(a + b - j1);
+            let phase = 1.0 - 2.0 * (((a + b - j1) / 2) & 1) as f64;
             new_prefix.copy_from_slice(prefix);
             new_prefix[0] = b as u8;
             if let Some(&nid) = prefix_map.get(&new_prefix) {
@@ -615,7 +401,7 @@ fn build_swap_matrix(
         let x = prefix[pos - 1] as i32;
         let j_k = prefix[pos] as i32;
         let j_k1 = prefix[pos + 1] as i32;
-        let coeffs = swap_coeffs(x, j_k, j_k1, a, b, zero_eps);
+        let coeffs = swap_coeffs(x, j_k, j_k1, a, b, tables, zero_eps);
 
         new_prefix.copy_from_slice(prefix);
         for &(j_kp, c) in coeffs.iter() {
@@ -871,48 +657,24 @@ fn fill_swap_mats(
 
     let step_keys: Vec<(usize, i32, i32)> = steps.into_keys().collect();
 
-    if let Some((table1, table2)) = tables {
-        // Uniform spin case: use pre-built 6j tables
-        let mats: Vec<((usize, i32, i32), CsrMatrix)> = step_keys
-            .par_iter()
-            .map(|&(pos, a, b)| {
-                let mat = build_swap_matrix_with_table(
-                    &index.global_prefixes,
-                    &index.global_prefix_map,
-                    pos,
-                    a,
-                    b,
-                    table1,
-                    table2,
-                    zero_eps,
-                );
-                ((pos, a, b), mat)
-            })
-            .collect();
+    let mats: Vec<((usize, i32, i32), CsrMatrix)> = step_keys
+        .par_iter()
+        .map(|&(pos, a, b)| {
+            let mat = build_swap_matrix(
+                &index.global_prefixes,
+                &index.global_prefix_map,
+                pos,
+                a,
+                b,
+                tables,
+                zero_eps,
+            );
+            ((pos, a, b), mat)
+        })
+        .collect();
 
-        for (key, mat) in mats {
-            index.swap_mats.insert(key, mat);
-        }
-    } else {
-        // Non-uniform case: fallback to per-call 6j computation
-        let mats: Vec<((usize, i32, i32), CsrMatrix)> = step_keys
-            .par_iter()
-            .map(|&(pos, a, b)| {
-                let mat = build_swap_matrix(
-                    &index.global_prefixes,
-                    &index.global_prefix_map,
-                    pos,
-                    a,
-                    b,
-                    zero_eps,
-                );
-                ((pos, a, b), mat)
-            })
-            .collect();
-
-        for (key, mat) in mats {
-            index.swap_mats.insert(key, mat);
-        }
+    for (key, mat) in mats {
+        index.swap_mats.insert(key, mat);
     }
 
     // Collect adjacent pair matrix keys
@@ -1094,8 +856,8 @@ pub fn make_su2_heisenberg_hamiltonian(
             let a = max_two_s;
             let b = max_two_s;
             Some((
-                get_cached_table(a, b, max_two_j),
-                get_cached_table(b, a, max_two_j),
+                get_cached_sixj_table(a, b, max_two_j),
+                get_cached_sixj_table(b, a, max_two_j),
             ))
         } else {
             None
