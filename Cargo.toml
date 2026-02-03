@@ -26,6 +26,9 @@ lapack-src = { version = "0.10", features = ["openblas"] }
 default = []
 extension-module = ["pyo3/extension-module"]
 
+[dev-dependencies]
+proptest = "1.6"
+
 [profile.release]
 opt-level = 3
 lto = true
