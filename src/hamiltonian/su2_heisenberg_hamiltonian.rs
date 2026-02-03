@@ -1,4 +1,4 @@
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use anyhow::{bail, Result};
 use std::sync::Arc;
 
@@ -27,180 +27,11 @@ struct PairPlan {
     reverse: Vec<SwapStep>,
 }
 
-struct PairGroup {
-    prefix_cols: Vec<usize>,
-    transitions: CsrMatrix,
-}
-
-struct PairTable {
+struct PairInfo {
+    site_i: usize,
+    site_j: usize,
     val: f64,
-    row_group_ids: Vec<usize>,
-    row_prefix_ids: Vec<usize>,
-    groups: Vec<PairGroup>,
-}
-
-struct SuffixIndex {
-    row_group_ids: Vec<usize>,
-    row_prefix_ids: Vec<usize>,
-    group_local_maps: Vec<AHashMap<usize, usize>>,
-    group_prefix_ids: Vec<Vec<usize>>,
-    prefix_cols: Vec<Vec<usize>>,
-    global_prefixes: Vec<Vec<u8>>,
-    global_prefix_map: AHashMap<Vec<u8>, usize>,
-    swap_mats: AHashMap<(usize, i32, i32), CsrMatrix>,
-    /// Adjacent pair matrices: (adjacent_pos, two_si, two_sj) -> matrix
-    adjacent_mats: AHashMap<(usize, i32, i32), CsrMatrix>,
-}
-
-/// Compute the adjacent pair matrix elements for S_i · S_j at position `adjacent_pos`.
-/// After swaps, site i is at position `adjacent_pos` and site j is at position `adjacent_pos + 1`.
-/// Uses 6j recoupling to compute ⟨J''_k| S_i · S_j |J'_k⟩.
-fn build_adjacent_pair_matrix(
-    prefixes: &[Vec<u8>],
-    prefix_map: &AHashMap<Vec<u8>, usize>,
-    adjacent_pos: usize,
-    two_si: i32,
-    two_sj: i32,
-    tables: Option<(&Sixj6Table, &Sixj6Table)>,
-    zero_eps: f64,
-) -> CsrMatrix {
-    let dim = prefixes.len();
-
-    let prefix_len = if prefixes.is_empty() {
-        0
-    } else {
-        prefixes[0].len()
-    };
-
-    // K ranges from |s_i - s_j| to s_i + s_j
-    let min_k = (two_si - two_sj).abs();
-    let max_k = two_si + two_sj;
-
-    // Parallel computation over all prefixes
-    let out = (0..dim)
-        .into_par_iter()
-        .map(|pid| {
-            let prefix = &prefixes[pid];
-            let mut row = Vec::new();
-
-            if adjacent_pos == 0 {
-                // Special case: S_i · S_j at positions 0, 1.
-                // The cumulative spin at position 1 is J_2 = |S_0 + S_1|, stored in prefix[1].
-                // Casimir: S_i · S_j = (J_2(J_2+1) - s_i(s_i+1) - s_j(s_j+1)) / 2
-                let j2 = prefix[1] as i32;
-                let eig = 0.125
-                    * ((j2 * (j2 + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
-                if eig.abs() >= zero_eps {
-                    row.push((pid, eig));
-                }
-                return row;
-            }
-
-            // General case: use 6j recoupling
-            let j_km1 = prefix[adjacent_pos - 1] as i32;
-            let j_k = prefix[adjacent_pos] as i32;
-            let j_k1 = prefix[adjacent_pos + 1] as i32;
-
-            // Possible J'_k values satisfying triangle inequalities
-            let min_jk_prime = (j_km1 - two_si).abs().max((j_k1 - two_sj).abs());
-            let max_jk_prime = (j_km1 + two_si).min(j_k1 + two_sj);
-
-            let mut new_prefix = vec![0u8; prefix_len];
-            new_prefix.copy_from_slice(prefix);
-            let mut jk_prime = min_jk_prime;
-            if ((jk_prime + j_km1 + two_si) & 1) != 0 {
-                jk_prime += 1;
-            }
-
-            while jk_prime <= max_jk_prime {
-                // Matrix element ⟨J'_k| S_i · S_j |J_k⟩
-                // = Σ_K (2K+1) × eigenvalue(K) × {j_km1, s_i, j_k; s_j, j_k1, K} × {j_km1, s_i, j'_k; s_j, j_k1, K}
-                let mut sum = 0.0;
-                let mut k = min_k;
-                if ((k + two_si + two_sj) & 1) != 0 {
-                    k += 1;
-                }
-                while k <= max_k {
-                    let eig_k = 0.125
-                        * ((k * (k + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
-                    // Use 6j table if available, otherwise compute directly
-                    let sixj1 = if let Some((table1, _)) = tables {
-                        table1.get(j_km1, j_k, j_k1, k)
-                    } else {
-                        f64::from(
-                            Wigner6j {
-                                tj1: j_km1,
-                                tj2: two_si,
-                                tj3: j_k,
-                                tj4: two_sj,
-                                tj5: j_k1,
-                                tj6: k,
-                            }
-                            .value(),
-                        )
-                    };
-                    if sixj1.abs() < zero_eps {
-                        k += 2;
-                        continue;
-                    }
-                    let sixj2 = if let Some((table1, _)) = tables {
-                        table1.get(j_km1, jk_prime, j_k1, k)
-                    } else {
-                        f64::from(
-                            Wigner6j {
-                                tj1: j_km1,
-                                tj2: two_si,
-                                tj3: jk_prime,
-                                tj4: two_sj,
-                                tj5: j_k1,
-                                tj6: k,
-                            }
-                            .value(),
-                        )
-                    };
-                    if sixj2.abs() >= zero_eps {
-                        let weight = (k + 1) as f64;
-                        sum += weight * eig_k * sixj1 * sixj2;
-                    }
-                    k += 2;
-                }
-
-                if sum.abs() >= zero_eps {
-                    let norm = ((j_k + 1) as f64 * (jk_prime + 1) as f64).sqrt();
-                    let coeff = norm * sum;
-                    if coeff.abs() >= zero_eps {
-                        new_prefix[adjacent_pos] = jk_prime as u8;
-                        if let Some(&nid) = prefix_map.get(&new_prefix) {
-                            row.push((nid, coeff));
-                        }
-                    }
-                }
-                jk_prime += 2;
-            }
-
-            row
-        })
-        .collect::<Vec<_>>();
-
-    // Convert to CsrMatrix
-    let mut rows = Vec::with_capacity(dim + 1);
-    let mut cols = Vec::new();
-    let mut vals = Vec::new();
-    rows.push(0);
-    for row_data in out {
-        for (col, val) in row_data {
-            cols.push(col);
-            vals.push(val);
-        }
-        rows.push(cols.len());
-    }
-    CsrMatrix {
-        row_dim: dim,
-        col_dim: dim,
-        rows,
-        cols,
-        vals,
-    }
+    pos_j: usize,
 }
 
 fn swap_coeffs(
@@ -287,16 +118,6 @@ fn swap_coeffs(
 }
 
 /// Build a plan to compute S_i · S_j matrix elements.
-///
-/// New algorithm: Move site i to position j-1 (adjacent to j), then apply Casimir.
-/// This requires only O(j-i-1) swaps instead of O(max(i,j)).
-/// For adjacent pairs (i, i+1), this means ZERO swaps!
-///
-/// Arguments:
-/// - two_s_list: spin values in original site order (two_s_list[site] = 2*S_site)
-/// - coupling_order: mapping from position to site (coupling_order[pos] = site)
-/// - site_to_pos: inverse mapping (site_to_pos[site] = position)
-/// - site_i, site_j: physical site indices (not positions)
 fn build_pair_plan(
     two_s_list: &[i32],
     coupling_order: &[usize],
@@ -306,7 +127,6 @@ fn build_pair_plan(
 ) -> PairPlan {
     let n = coupling_order.len();
 
-    // Get coupling positions from lookup table
     let pos_i = site_to_pos[site_i];
     let pos_j = site_to_pos[site_j];
     let (i, j) = if pos_i < pos_j {
@@ -318,14 +138,9 @@ fn build_pair_plan(
     let mut order = (0..n).collect::<Vec<_>>();
     let mut forward = Vec::new();
 
-    // Move site i to position j-1 by swapping it rightward
-    // Initial: ... s_i, s_{i+1}, ..., s_{j-1}, s_j, ...
-    // After:   ... s_{i+1}, ..., s_{j-1}, s_i, s_j, ...
-    // Number of swaps = j - i - 1 (zero for adjacent pairs!)
     let mut cur_pos = i;
     while cur_pos < j - 1 {
         let pos = cur_pos;
-        // order[pos] is the current position, coupling_order maps position to site
         let a = two_s_list[coupling_order[order[pos]]];
         let b = two_s_list[coupling_order[order[pos + 1]]];
         forward.push(SwapStep { pos, a, b });
@@ -345,421 +160,368 @@ fn build_pair_plan(
     PairPlan {
         two_si: two_s_list[site_i],
         two_sj: two_s_list[site_j],
-        // After moving site i to position j-1, the adjacent pair is at positions (j-1, j).
-        // The adjacent pair matrix is applied at position j-1 (using prefix indices).
         adjacent_pos: j - 1,
         forward,
         reverse,
     }
 }
 
-fn build_swap_matrix(
-    prefixes: &[Vec<u8>],
-    prefix_map: &AHashMap<Vec<u8>, usize>,
+/// Compute adjacent pair coefficients and output new prefixes with coefficients
+fn compute_adjacent_transitions(
+    prefix: &[u8],
+    adjacent_pos: usize,
+    two_si: i32,
+    two_sj: i32,
+    tables: Option<(&Sixj6Table, &Sixj6Table)>,
+    zero_eps: f64,
+    out: &mut Vec<(Vec<u8>, f64)>,
+) {
+    let min_k = (two_si - two_sj).abs();
+    let max_k = two_si + two_sj;
+
+    if adjacent_pos == 0 {
+        let j2 = prefix[1] as i32;
+        let eig = 0.125 * ((j2 * (j2 + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
+        if eig.abs() >= zero_eps {
+            out.push((prefix.to_vec(), eig));
+        }
+        return;
+    }
+
+    let j_km1 = prefix[adjacent_pos - 1] as i32;
+    let j_k = prefix[adjacent_pos] as i32;
+    let j_k1 = prefix[adjacent_pos + 1] as i32;
+
+    let min_jk_prime = (j_km1 - two_si).abs().max((j_k1 - two_sj).abs());
+    let max_jk_prime = (j_km1 + two_si).min(j_k1 + two_sj);
+
+    let mut jk_prime = min_jk_prime;
+    if ((jk_prime + j_km1 + two_si) & 1) != 0 {
+        jk_prime += 1;
+    }
+
+    while jk_prime <= max_jk_prime {
+        let mut sum = 0.0;
+        let mut k = min_k;
+        if ((k + two_si + two_sj) & 1) != 0 {
+            k += 1;
+        }
+        while k <= max_k {
+            let eig_k =
+                0.125 * ((k * (k + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
+            let sixj1 = if let Some((table1, _)) = tables {
+                table1.get(j_km1, j_k, j_k1, k)
+            } else {
+                f64::from(
+                    Wigner6j {
+                        tj1: j_km1,
+                        tj2: two_si,
+                        tj3: j_k,
+                        tj4: two_sj,
+                        tj5: j_k1,
+                        tj6: k,
+                    }
+                    .value(),
+                )
+            };
+            if sixj1.abs() < zero_eps {
+                k += 2;
+                continue;
+            }
+            let sixj2 = if let Some((table1, _)) = tables {
+                table1.get(j_km1, jk_prime, j_k1, k)
+            } else {
+                f64::from(
+                    Wigner6j {
+                        tj1: j_km1,
+                        tj2: two_si,
+                        tj3: jk_prime,
+                        tj4: two_sj,
+                        tj5: j_k1,
+                        tj6: k,
+                    }
+                    .value(),
+                )
+            };
+            if sixj2.abs() >= zero_eps {
+                let weight = (k + 1) as f64;
+                sum += weight * eig_k * sixj1 * sixj2;
+            }
+            k += 2;
+        }
+
+        if sum.abs() >= zero_eps {
+            let norm = ((j_k + 1) as f64 * (jk_prime + 1) as f64).sqrt();
+            let coeff = norm * sum;
+            if coeff.abs() >= zero_eps {
+                let mut new_prefix = prefix.to_vec();
+                new_prefix[adjacent_pos] = jk_prime as u8;
+                out.push((new_prefix, coeff));
+            }
+        }
+        jk_prime += 2;
+    }
+}
+
+/// Compute swap coefficients and output new prefixes with coefficients
+fn compute_swap_transitions(
+    prefix: &[u8],
     pos: usize,
     a: i32,
     b: i32,
     tables: Option<(&Sixj6Table, &Sixj6Table)>,
     zero_eps: f64,
-) -> CsrMatrix {
-    let dim = prefixes.len();
-
-    // Reusable buffer to avoid allocations
-    let prefix_len = if prefixes.is_empty() {
-        0
-    } else {
-        prefixes[0].len()
-    };
-    let mut new_prefix = vec![0u8; prefix_len];
-
-    let mut rows = Vec::with_capacity(dim + 1);
-    let mut cols = Vec::new();
-    let mut vals = Vec::new();
-    rows.push(0);
-
-    for prefix in prefixes.iter() {
-        if pos == 0 {
-            let j1 = prefix[1] as i32;
-            let phase = 1.0 - 2.0 * (((a + b - j1) / 2) & 1) as f64;
-            new_prefix.copy_from_slice(prefix);
-            new_prefix[0] = b as u8;
-            if let Some(&nid) = prefix_map.get(&new_prefix) {
-                if phase.abs() >= zero_eps {
-                    cols.push(nid);
-                    vals.push(phase);
-                }
-            }
-            rows.push(cols.len());
-            continue;
-        }
-
-        let x = prefix[pos - 1] as i32;
-        let j_k = prefix[pos] as i32;
-        let j_k1 = prefix[pos + 1] as i32;
-        let coeffs = swap_coeffs(x, j_k, j_k1, a, b, tables, zero_eps);
-
-        new_prefix.copy_from_slice(prefix);
-        for &(j_kp, c) in coeffs.iter() {
-            new_prefix[pos] = j_kp as u8;
-            if let Some(&nid) = prefix_map.get(&new_prefix) {
-                if c.abs() >= zero_eps {
-                    cols.push(nid);
-                    vals.push(c);
-                }
-            }
-        }
-        rows.push(cols.len());
-    }
-
-    CsrMatrix {
-        row_dim: dim,
-        col_dim: dim,
-        rows,
-        cols,
-        vals,
-    }
-}
-
-fn apply_step_vec(
-    vec_in: &[(usize, f64)],
-    step_mat: &CsrMatrix,
-    acc: &mut [f64],
-    touched: &mut Vec<usize>,
-    out: &mut Vec<(usize, f64)>,
-    zero_eps: f64,
+    out: &mut Vec<(Vec<u8>, f64)>,
 ) {
-    touched.clear();
-    out.clear();
-    for &(id, coeff) in vec_in.iter() {
-        if coeff.abs() < zero_eps {
-            continue;
+    if pos == 0 {
+        let j1 = prefix[1] as i32;
+        let phase = 1.0 - 2.0 * (((a + b - j1) / 2) & 1) as f64;
+        if phase.abs() >= zero_eps {
+            let mut new_prefix = prefix.to_vec();
+            new_prefix[0] = b as u8;
+            out.push((new_prefix, phase));
         }
-        let row_start = step_mat.rows[id];
-        let row_end = step_mat.rows[id + 1];
-        for k in row_start..row_end {
-            let nid = step_mat.cols[k];
-            let w = step_mat.vals[k];
-            let v = coeff * w;
-            if v.abs() < zero_eps {
-                continue;
-            }
-            if acc[nid].abs() < zero_eps {
-                touched.push(nid);
-            }
-            acc[nid] += v;
-        }
-    }
-    if touched.is_empty() {
         return;
     }
-    out.reserve(touched.len());
-    for &nid in touched.iter() {
-        let v = acc[nid];
-        acc[nid] = 0.0;
-        if v.abs() >= zero_eps {
-            out.push((nid, v));
+
+    let x = prefix[pos - 1] as i32;
+    let j_k = prefix[pos] as i32;
+    let j_k1 = prefix[pos + 1] as i32;
+    let coeffs = swap_coeffs(x, j_k, j_k1, a, b, tables, zero_eps);
+
+    for &(j_kp, c) in coeffs.iter() {
+        if c.abs() >= zero_eps {
+            let mut new_prefix = prefix.to_vec();
+            new_prefix[pos] = j_kp as u8;
+            out.push((new_prefix, c));
         }
     }
 }
 
-fn build_pair_transitions_global_dp(
-    prefixes: &[Vec<u8>],
+/// Compute transitions for a single row and accumulate to final col indices
+fn compute_row_transitions_and_accumulate(
+    state: &[u8],
+    pos_j: usize,
     plan: &PairPlan,
-    swap_mats: &AHashMap<(usize, i32, i32), CsrMatrix>,
-    adjacent_mats: &AHashMap<(usize, i32, i32), CsrMatrix>,
+    inverse_basis: &AHashMap<Vec<u8>, usize>,
+    tables: Option<(&Sixj6Table, &Sixj6Table)>,
+    val: f64,
+    acc: &mut AHashMap<usize, f64>,
+    prefix_acc: &mut AHashMap<Vec<u8>, f64>,
+    buf_a: &mut Vec<(Vec<u8>, f64)>,
+    buf_b: &mut Vec<(Vec<u8>, f64)>,
+    full_state_buf: &mut Vec<u8>,
     zero_eps: f64,
-) -> CsrMatrix {
-    let dim = prefixes.len();
+) {
+    let prefix = &state[..=pos_j];
+    let suffix = &state[pos_j + 1..];
+    let adjacent_pos = plan.adjacent_pos;
 
-    // Get the adjacent pair matrix for this plan
-    let adjacent_mat = adjacent_mats
-        .get(&(plan.adjacent_pos, plan.two_si, plan.two_sj))
-        .expect("adjacent pair matrix missing");
-
-    // Fast path: adjacent pairs have no swaps, so adjacent_mat IS the transition matrix
+    // Fast path: adjacent pairs have no swaps - avoid prefix allocation
     if plan.forward.is_empty() {
-        return adjacent_mat.clone();
+        let two_si = plan.two_si;
+        let two_sj = plan.two_sj;
+        let min_k = (two_si - two_sj).abs();
+        let max_k = two_si + two_sj;
+
+        if adjacent_pos == 0 {
+            // Special case: positions 0, 1
+            let j2 = prefix[1] as i32;
+            let eig =
+                0.125 * ((j2 * (j2 + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
+            if eig.abs() >= zero_eps {
+                // Diagonal element - same state
+                if let Some(&col) = inverse_basis.get(state) {
+                    *acc.entry(col).or_insert(0.0) += val * eig;
+                }
+            }
+            return;
+        }
+
+        let j_km1 = prefix[adjacent_pos - 1] as i32;
+        let j_k = prefix[adjacent_pos] as i32;
+        let j_k1 = prefix[adjacent_pos + 1] as i32;
+
+        let min_jk_prime = (j_km1 - two_si).abs().max((j_k1 - two_sj).abs());
+        let max_jk_prime = (j_km1 + two_si).min(j_k1 + two_sj);
+
+        let mut jk_prime = min_jk_prime;
+        if ((jk_prime + j_km1 + two_si) & 1) != 0 {
+            jk_prime += 1;
+        }
+
+        // Reuse full_state_buf for all transitions
+        full_state_buf.clear();
+        full_state_buf.extend_from_slice(state);
+
+        while jk_prime <= max_jk_prime {
+            let mut sum = 0.0;
+            let mut k = min_k;
+            if ((k + two_si + two_sj) & 1) != 0 {
+                k += 1;
+            }
+            while k <= max_k {
+                let eig_k =
+                    0.125 * ((k * (k + 2) - two_si * (two_si + 2) - two_sj * (two_sj + 2)) as f64);
+                let sixj1 = if let Some((table1, _)) = tables {
+                    table1.get(j_km1, j_k, j_k1, k)
+                } else {
+                    f64::from(
+                        Wigner6j {
+                            tj1: j_km1,
+                            tj2: two_si,
+                            tj3: j_k,
+                            tj4: two_sj,
+                            tj5: j_k1,
+                            tj6: k,
+                        }
+                        .value(),
+                    )
+                };
+                if sixj1.abs() < zero_eps {
+                    k += 2;
+                    continue;
+                }
+                let sixj2 = if let Some((table1, _)) = tables {
+                    table1.get(j_km1, jk_prime, j_k1, k)
+                } else {
+                    f64::from(
+                        Wigner6j {
+                            tj1: j_km1,
+                            tj2: two_si,
+                            tj3: jk_prime,
+                            tj4: two_sj,
+                            tj5: j_k1,
+                            tj6: k,
+                        }
+                        .value(),
+                    )
+                };
+                if sixj2.abs() >= zero_eps {
+                    let weight = (k + 1) as f64;
+                    sum += weight * eig_k * sixj1 * sixj2;
+                }
+                k += 2;
+            }
+
+            if sum.abs() >= zero_eps {
+                let norm = ((j_k + 1) as f64 * (jk_prime + 1) as f64).sqrt();
+                let coeff = norm * sum;
+                if coeff.abs() >= zero_eps {
+                    full_state_buf[adjacent_pos] = jk_prime as u8;
+                    if let Some(&col) = inverse_basis.get(full_state_buf.as_slice()) {
+                        *acc.entry(col).or_insert(0.0) += val * coeff;
+                    }
+                }
+            }
+            jk_prime += 2;
+        }
+        // Restore original value
+        full_state_buf[adjacent_pos] = j_k as u8;
+        return;
     }
 
     // Slow path: non-adjacent pairs require swap chain
-    let out = (0..dim)
-        .into_par_iter()
-        .map_init(
-            || (vec![0.0; dim], Vec::new(), Vec::new(), Vec::new()),
-            |(acc, touched, buf_a, buf_b), pid| {
-                buf_a.clear();
-                buf_a.push((pid, 1.0));
+    buf_a.clear();
+    buf_a.push((prefix.to_vec(), 1.0));
 
-                // Apply forward swaps (O(j-i-1) steps)
-                for step in plan.forward.iter() {
-                    let step_mat = swap_mats
-                        .get(&(step.pos, step.a, step.b))
-                        .expect("swap matrix missing");
-                    apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
-                    std::mem::swap(buf_a, buf_b);
-                    if buf_a.is_empty() {
-                        return Vec::new();
-                    }
-                }
+    // Slow path: non-adjacent pairs require swap chain
+    prefix_acc.clear();
 
-                // Apply adjacent pair matrix (S_i · S_j interaction via 6j recoupling)
-                apply_step_vec(buf_a, adjacent_mat, acc, touched, buf_b, zero_eps);
-                std::mem::swap(buf_a, buf_b);
-                if buf_a.is_empty() {
-                    return Vec::new();
-                }
-
-                // Apply reverse swaps
-                for step in plan.reverse.iter() {
-                    let step_mat = swap_mats
-                        .get(&(step.pos, step.a, step.b))
-                        .expect("swap matrix missing");
-                    apply_step_vec(buf_a, step_mat, acc, touched, buf_b, zero_eps);
-                    std::mem::swap(buf_a, buf_b);
-                    if buf_a.is_empty() {
-                        return Vec::new();
-                    }
-                }
-
-                std::mem::take(buf_a)
-            },
-        )
-        .collect::<Vec<_>>();
-
-    // Convert to CsrMatrix
-    let mut rows = Vec::with_capacity(dim + 1);
-    let mut cols = Vec::new();
-    let mut vals = Vec::new();
-    rows.push(0);
-    for row_data in out {
-        for (col, val) in row_data {
-            cols.push(col);
-            vals.push(val);
-        }
-        rows.push(cols.len());
-    }
-    CsrMatrix {
-        row_dim: dim,
-        col_dim: dim,
-        rows,
-        cols,
-        vals,
-    }
-}
-
-fn build_suffix_index(basis: &SU2HeisenbergBasis, pos_j: usize) -> SuffixIndex {
-    let dim = basis.dim();
-
-    let mut group_map = AHashMap::new();
-    let mut group_local_maps = Vec::new();
-    let mut group_prefix_ids = Vec::new();
-    let mut group_suffixes = Vec::new();
-    let mut row_group_ids = vec![0; dim];
-    let mut row_prefix_ids = vec![0; dim];
-
-    let mut global_prefix_map = AHashMap::new();
-    let mut global_prefixes = Vec::new();
-
-    for (row, state) in basis.basis.iter().enumerate() {
-        let suffix = state[pos_j + 1..].to_vec();
-        let gid = if let Some(&gid) = group_map.get(&suffix) {
-            gid
-        } else {
-            let gid = group_map.len();
-            group_map.insert(suffix.clone(), gid);
-            group_local_maps.push(AHashMap::new());
-            group_prefix_ids.push(Vec::new());
-            group_suffixes.push(suffix);
-            gid
-        };
-
-        let prefix = state[..=pos_j].to_vec();
-        let gpid = if let Some(&pid) = global_prefix_map.get(&prefix) {
-            pid
-        } else {
-            let pid = global_prefixes.len();
-            global_prefixes.push(prefix);
-            global_prefix_map.insert(global_prefixes[pid].clone(), pid);
-            pid
-        };
-
-        let local_map = &mut group_local_maps[gid];
-        let local_prefixes = &mut group_prefix_ids[gid];
-        let pid = if let Some(&pid) = local_map.get(&gpid) {
-            pid
-        } else {
-            let pid = local_prefixes.len();
-            local_prefixes.push(gpid);
-            local_map.insert(gpid, pid);
-            pid
-        };
-
-        row_group_ids[row] = gid;
-        row_prefix_ids[row] = pid;
-    }
-
-    let mut prefix_cols = Vec::with_capacity(group_prefix_ids.len());
-    for (gid, local_prefixes) in group_prefix_ids.iter().enumerate() {
-        let suffix = &group_suffixes[gid];
-        let mut cols = Vec::with_capacity(local_prefixes.len());
-        for &gpid in local_prefixes.iter() {
-            let prefix = &global_prefixes[gpid];
-            let mut full = Vec::with_capacity(prefix.len() + suffix.len());
-            full.extend_from_slice(prefix);
-            full.extend_from_slice(suffix);
-            let col = *basis
-                .inverse_basis
-                .get(&full)
-                .expect("state not found in inverse basis");
-            cols.push(col);
-        }
-        prefix_cols.push(cols);
-    }
-
-    SuffixIndex {
-        row_group_ids,
-        row_prefix_ids,
-        group_local_maps,
-        group_prefix_ids,
-        prefix_cols,
-        global_prefixes,
-        global_prefix_map,
-        swap_mats: AHashMap::new(),
-        adjacent_mats: AHashMap::new(),
-    }
-}
-
-fn fill_swap_mats(
-    index: &mut SuffixIndex,
-    plans: &[PairPlan],
-    tables: Option<(&Sixj6Table, &Sixj6Table)>,
-    zero_eps: f64,
-) {
-    // Collect swap steps
-    let mut steps = AHashSet::new();
-    for plan in plans.iter() {
-        for step in plan.forward.iter().chain(plan.reverse.iter()) {
-            steps.insert((step.pos, step.a, step.b));
-        }
-    }
-
-    let step_keys = steps.into_iter().collect::<Vec<_>>();
-
-    let mats = step_keys
-        .par_iter()
-        .map(|&(pos, a, b)| {
-            let mat = build_swap_matrix(
-                &index.global_prefixes,
-                &index.global_prefix_map,
-                pos,
-                a,
-                b,
-                tables,
-                zero_eps,
-            );
-            ((pos, a, b), mat)
-        })
-        .collect::<Vec<_>>();
-
-    for (key, mat) in mats {
-        index.swap_mats.insert(key, mat);
-    }
-
-    // Collect adjacent pair matrix keys
-    let mut adjacent_keys = AHashSet::new();
-    for plan in plans.iter() {
-        adjacent_keys.insert((plan.adjacent_pos, plan.two_si, plan.two_sj));
-    }
-
-    let adjacent_key_list = adjacent_keys.into_iter().collect::<Vec<_>>();
-
-    // Build adjacent pair matrices (these use 6j symbols for recoupling)
-    let adjacent_mats = adjacent_key_list
-        .par_iter()
-        .map(|&(pos, two_si, two_sj)| {
-            let mat = build_adjacent_pair_matrix(
-                &index.global_prefixes,
-                &index.global_prefix_map,
-                pos,
-                two_si,
-                two_sj,
-                tables,
-                zero_eps,
-            );
-            ((pos, two_si, two_sj), mat)
-        })
-        .collect::<Vec<_>>();
-
-    for (key, mat) in adjacent_mats {
-        index.adjacent_mats.insert(key, mat);
-    }
-}
-
-fn build_pair_table_with_index(
-    index: &SuffixIndex,
-    site_i: usize,
-    site_j: usize,
-    val: f64,
-    two_s_list: &[i32],
-    coupling_order: &[usize],
-    site_to_pos: &[usize],
-    zero_eps: f64,
-) -> PairTable {
-    let plan = build_pair_plan(two_s_list, coupling_order, site_to_pos, site_i, site_j);
-    let global_transitions = build_pair_transitions_global_dp(
-        &index.global_prefixes,
-        &plan,
-        &index.swap_mats,
-        &index.adjacent_mats,
-        zero_eps,
-    );
-
-    let mut groups = Vec::with_capacity(index.group_prefix_ids.len());
-    for (gid, local_prefixes) in index.group_prefix_ids.iter().enumerate() {
-        let local_map = &index.group_local_maps[gid];
-
-        // Build CSR matrix for transitions
-        let row_dim = local_prefixes.len();
-        let col_dim = local_map.len();
-        let mut rows = Vec::with_capacity(row_dim + 1);
-        let mut cols = Vec::new();
-        let mut vals = Vec::new();
-
-        rows.push(0);
-        for &gpid in local_prefixes.iter() {
-            let start = global_transitions.rows[gpid];
-            let end = global_transitions.rows[gpid + 1];
-            for k in start..end {
-                let new_gpid = global_transitions.cols[k];
-                let coeff = global_transitions.vals[k];
-                if coeff.abs() < zero_eps {
-                    continue;
-                }
-                if let Some(&lid) = local_map.get(&new_gpid) {
-                    cols.push(lid);
-                    vals.push(coeff);
+    // Apply forward swaps
+    for step in plan.forward.iter() {
+        for (p, coeff) in buf_a.drain(..) {
+            if coeff.abs() < zero_eps {
+                continue;
+            }
+            buf_b.clear();
+            compute_swap_transitions(&p, step.pos, step.a, step.b, tables, zero_eps, buf_b);
+            for (new_p, w) in buf_b.drain(..) {
+                let v = coeff * w;
+                if v.abs() >= zero_eps {
+                    *prefix_acc.entry(new_p).or_insert(0.0) += v;
                 }
             }
-            rows.push(cols.len());
         }
-
-        groups.push(PairGroup {
-            prefix_cols: index.prefix_cols[gid].clone(),
-            transitions: CsrMatrix {
-                row_dim,
-                col_dim,
-                rows,
-                cols,
-                vals,
-            },
-        });
+        buf_a.clear();
+        for (p, v) in prefix_acc.drain() {
+            if v.abs() >= zero_eps {
+                buf_a.push((p, v));
+            }
+        }
+        if buf_a.is_empty() {
+            return;
+        }
     }
 
-    PairTable {
-        val,
-        row_group_ids: index.row_group_ids.clone(),
-        row_prefix_ids: index.row_prefix_ids.clone(),
-        groups,
+    // Apply adjacent pair
+    for (p, coeff) in buf_a.drain(..) {
+        if coeff.abs() < zero_eps {
+            continue;
+        }
+        buf_b.clear();
+        compute_adjacent_transitions(
+            &p,
+            plan.adjacent_pos,
+            plan.two_si,
+            plan.two_sj,
+            tables,
+            zero_eps,
+            buf_b,
+        );
+        for (new_p, w) in buf_b.drain(..) {
+            let v = coeff * w;
+            if v.abs() >= zero_eps {
+                *prefix_acc.entry(new_p).or_insert(0.0) += v;
+            }
+        }
+    }
+    buf_a.clear();
+    for (p, v) in prefix_acc.drain() {
+        if v.abs() >= zero_eps {
+            buf_a.push((p, v));
+        }
+    }
+    if buf_a.is_empty() {
+        return;
+    }
+
+    // Apply reverse swaps
+    for step in plan.reverse.iter() {
+        for (p, coeff) in buf_a.drain(..) {
+            if coeff.abs() < zero_eps {
+                continue;
+            }
+            buf_b.clear();
+            compute_swap_transitions(&p, step.pos, step.a, step.b, tables, zero_eps, buf_b);
+            for (new_p, w) in buf_b.drain(..) {
+                let v = coeff * w;
+                if v.abs() >= zero_eps {
+                    *prefix_acc.entry(new_p).or_insert(0.0) += v;
+                }
+            }
+        }
+        buf_a.clear();
+        for (p, v) in prefix_acc.drain() {
+            if v.abs() >= zero_eps {
+                buf_a.push((p, v));
+            }
+        }
+        if buf_a.is_empty() {
+            return;
+        }
+    }
+
+    // Accumulate final results
+    for (p, v) in buf_a.drain(..) {
+        if v.abs() >= zero_eps {
+            full_state_buf.clear();
+            full_state_buf.extend_from_slice(&p);
+            full_state_buf.extend_from_slice(suffix);
+            if let Some(&col) = inverse_basis.get(full_state_buf.as_slice()) {
+                *acc.entry(col).or_insert(0.0) += val * v;
+            }
+        }
     }
 }
 
@@ -782,37 +544,8 @@ pub fn make_su2_heisenberg_hamiltonian(
     let site_to_pos = &basis.site_to_pos;
 
     with_pool(num_threads, || {
-        // Use exchange bonds directly with site indices
         let exchange: Vec<_> = model.exchange.iter().map(|(&k, &v)| (k, v)).collect();
 
-        // Collect unique max positions needed
-        let mut j_values: Vec<_> = exchange
-            .iter()
-            .map(|&((site_i, site_j), _)| site_to_pos[site_i].max(site_to_pos[site_j]))
-            .collect();
-        j_values.sort_unstable();
-        j_values.dedup();
-
-        // Build suffix indices in parallel (keyed by position)
-        let index_pairs = j_values
-            .par_iter()
-            .map(|&pos_j| (pos_j, build_suffix_index(basis, pos_j)))
-            .collect::<Vec<_>>();
-        let indices = index_pairs.into_iter().collect::<AHashMap<_, _>>();
-
-        // Build plans (keyed by max position)
-        let mut plans_by_j: AHashMap<_, Vec<_>> = AHashMap::new();
-        for &((site_i, site_j), _) in exchange.iter() {
-            let pos_j = site_to_pos[site_i].max(site_to_pos[site_j]);
-            let plan = build_pair_plan(
-                &basis.two_s_list,
-                &basis.coupling_order,
-                &site_to_pos,
-                site_i,
-                site_j,
-            );
-            plans_by_j.entry(pos_j).or_default().push(plan);
-        }
         // Check if all spins are uniform (for 6j table optimization)
         let is_uniform_spin = {
             let first_s = basis.two_s_list.first().copied().unwrap_or(0);
@@ -820,8 +553,6 @@ pub fn make_su2_heisenberg_hamiltonian(
         };
 
         // Compute max_two_j for 6j table bounds
-        // j_kp can be up to x + b, where x is the largest cumulative spin
-        // and b is the local spin. We add margin for safety.
         let max_in_basis = basis
             .basis
             .iter()
@@ -843,82 +574,77 @@ pub fn make_su2_heisenberg_hamiltonian(
         } else {
             None
         };
+        let tables_ref = tables.as_ref().map(|(t1, t2)| (t1.as_ref(), t2.as_ref()));
 
-        // Convert to Vec for parallel processing
-        let mut index_vec = indices.into_iter().collect::<Vec<_>>();
-        let tables_ref = tables
-            .as_ref()
-            .map(|(t1, t2)| (Arc::clone(t1), Arc::clone(t2)));
-
-        index_vec.par_iter_mut().for_each(|(j, index)| {
-            if let Some(plans) = plans_by_j.get(j) {
-                let tref = tables_ref
-                    .as_ref()
-                    .map(|(t1, t2)| (t1.as_ref(), t2.as_ref()));
-                fill_swap_mats(index, plans, tref, zero_eps);
-            }
-        });
-
-        let indices = index_vec.into_iter().collect::<AHashMap<_, _>>();
-        let pair_tables = exchange
-            .par_iter()
+        // Build pair info list
+        let pair_infos: Vec<PairInfo> = exchange
+            .iter()
             .map(|&((site_i, site_j), val)| {
                 let pos_j = site_to_pos[site_i].max(site_to_pos[site_j]);
-                let index = indices.get(&pos_j).expect("suffix index missing");
-                build_pair_table_with_index(
-                    index,
+                PairInfo {
                     site_i,
                     site_j,
                     val,
+                    pos_j,
+                }
+            })
+            .collect();
+
+        // Build plans for each pair
+        let plans: Vec<PairPlan> = pair_infos
+            .iter()
+            .map(|info| {
+                build_pair_plan(
                     &basis.two_s_list,
                     &basis.coupling_order,
                     &site_to_pos,
-                    zero_eps,
+                    info.site_i,
+                    info.site_j,
                 )
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         let mut row_nnz = vec![0usize; dim];
 
         row_nnz.par_iter_mut().enumerate().for_each_init(
-            || (vec![0.0f64; dim], Vec::<usize>::new()),
-            |(acc, touched), (row, slot)| {
-                touched.clear();
+            || {
+                let acc = AHashMap::new();
+                let prefix_acc = AHashMap::new();
+                let buf_a = Vec::new();
+                let buf_b = Vec::new();
+                let full_state_buf = Vec::new();
+                (acc, prefix_acc, buf_a, buf_b, full_state_buf)
+            },
+            |(acc, prefix_acc, buf_a, buf_b, full_state_buf), (row, slot)| {
+                acc.clear();
 
-                for table in pair_tables.iter() {
-                    let gid = table.row_group_ids[row];
-                    let pid = table.row_prefix_ids[row];
-                    let group = &table.groups[gid];
-                    let trans = &group.transitions;
-                    let start = trans.rows[pid];
-                    let end = trans.rows[pid + 1];
-                    for k in start..end {
-                        let new_pid = trans.cols[k];
-                        let v = trans.vals[k];
-                        if v.abs() < zero_eps {
-                            continue;
-                        }
-                        let col = group.prefix_cols[new_pid];
-                        if acc[col].abs() < zero_eps {
-                            touched.push(col);
-                        }
-                        acc[col] += table.val * v;
-                    }
+                let state = &basis.basis[row];
+                for (info, plan) in pair_infos.iter().zip(plans.iter()) {
+                    compute_row_transitions_and_accumulate(
+                        state,
+                        info.pos_j,
+                        plan,
+                        &basis.inverse_basis,
+                        tables_ref,
+                        info.val,
+                        acc,
+                        prefix_acc,
+                        buf_a,
+                        buf_b,
+                        full_state_buf,
+                        zero_eps,
+                    );
                 }
 
                 if model.diagonal_shift.abs() >= zero_eps {
-                    if acc[row].abs() < zero_eps {
-                        touched.push(row);
-                    }
-                    acc[row] += model.diagonal_shift;
+                    *acc.entry(row).or_insert(0.0) += model.diagonal_shift;
                 }
 
                 let mut count = 0usize;
-                for &col in touched.iter() {
-                    if acc[col].abs() >= zero_eps {
+                for (_, v) in acc.iter() {
+                    if v.abs() >= zero_eps {
                         count += 1;
                     }
-                    acc[col] = 0.0;
                 }
                 *slot = count;
             },
@@ -947,48 +673,55 @@ pub fn make_su2_heisenberg_hamiltonian(
             cols_rem = c_tail;
             vals_rem = v_tail;
         }
+        drop(row_nnz);
 
         row_slices.into_par_iter().enumerate().for_each_init(
-            || (vec![0.0f64; dim], Vec::<usize>::new()),
-            |(acc, touched), (row, (row_cols, row_vals))| {
-                touched.clear();
+            || {
+                let acc = AHashMap::new();
+                let prefix_acc = AHashMap::new();
+                let buf_a = Vec::new();
+                let buf_b = Vec::new();
+                let full_state_buf = Vec::new();
+                let sorted_cols = Vec::new();
+                (acc, prefix_acc, buf_a, buf_b, full_state_buf, sorted_cols)
+            },
+            |(acc, prefix_acc, buf_a, buf_b, full_state_buf, sorted_cols),
+             (row, (row_cols, row_vals))| {
+                acc.clear();
 
-                for table in pair_tables.iter() {
-                    let gid = table.row_group_ids[row];
-                    let pid = table.row_prefix_ids[row];
-                    let group = &table.groups[gid];
-                    let trans = &group.transitions;
-                    let start = trans.rows[pid];
-                    let end = trans.rows[pid + 1];
-                    for k in start..end {
-                        let new_pid = trans.cols[k];
-                        let v = trans.vals[k];
-                        if v.abs() < zero_eps {
-                            continue;
-                        }
-                        let col = group.prefix_cols[new_pid];
-                        if acc[col].abs() < zero_eps {
-                            touched.push(col);
-                        }
-                        acc[col] += table.val * v;
-                    }
+                let state = &basis.basis[row];
+                for (info, plan) in pair_infos.iter().zip(plans.iter()) {
+                    compute_row_transitions_and_accumulate(
+                        state,
+                        info.pos_j,
+                        plan,
+                        &basis.inverse_basis,
+                        tables_ref,
+                        info.val,
+                        acc,
+                        prefix_acc,
+                        buf_a,
+                        buf_b,
+                        full_state_buf,
+                        zero_eps,
+                    );
                 }
 
                 if model.diagonal_shift.abs() >= zero_eps {
-                    if acc[row].abs() < zero_eps {
-                        touched.push(row);
-                    }
-                    acc[row] += model.diagonal_shift;
+                    *acc.entry(row).or_insert(0.0) += model.diagonal_shift;
                 }
 
-                touched.sort_unstable();
-                let mut k = 0usize;
-                for &col in touched.iter() {
-                    let v = acc[col];
-                    acc[col] = 0.0;
-                    if v.abs() < zero_eps {
-                        continue;
+                sorted_cols.clear();
+                for (&col, &v) in acc.iter() {
+                    if v.abs() >= zero_eps {
+                        sorted_cols.push(col);
                     }
+                }
+                sorted_cols.sort_unstable();
+
+                let mut k = 0usize;
+                for &col in sorted_cols.iter() {
+                    let v = *acc.get(&col).unwrap();
                     row_cols[k] = col;
                     row_vals[k] = v;
                     k += 1;
@@ -1047,12 +780,10 @@ mod tests {
         let spin = 0.5;
         let two_s = 1;
 
-        // Long-range interactions with various distances
         let mut exchange_su2 = HashMap::new();
         let mut exchange_xy = HashMap::new();
         let mut exchange_z = HashMap::new();
 
-        // All pairs with different coupling strengths
         let pairs = [
             ((0, 1), 1.0),
             ((1, 2), 0.9),
@@ -1076,10 +807,8 @@ mod tests {
             exchange_z.insert((i, j), val);
         }
 
-        // SU(2) model
         let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
 
-        // U(1) model
         let u1_model = HeisenbergModel {
             num_sites: n,
             two_s_list: vec![two_s; n],
@@ -1089,12 +818,10 @@ mod tests {
             exchange_z,
         };
 
-        // U(1): ground state from Sz=0 sector
         let u1_basis = u1_model.build_basis(&[0]).unwrap();
         let u1_ham = make_heisenberg_hamiltonian(&u1_basis, &u1_model, 1).unwrap();
         let u1_gs = get_ground_state_energy(&u1_ham);
 
-        // SU(2): ground state from S=0 sector
         let su2_basis = su2_model.build_basis(0.0).unwrap();
         let su2_ham = make_su2_heisenberg_hamiltonian(&su2_basis, &su2_model, 1).unwrap();
         let su2_gs = get_ground_state_energy(&su2_ham);
@@ -1113,12 +840,10 @@ mod tests {
         let spin = 1.0;
         let two_s = 2;
 
-        // Long-range interactions with various distances (all pairs)
         let mut exchange_su2 = HashMap::new();
         let mut exchange_xy = HashMap::new();
         let mut exchange_z = HashMap::new();
 
-        // All pairs with different coupling strengths
         let pairs = [
             ((0, 1), 1.0),
             ((1, 2), 0.9),
@@ -1142,10 +867,8 @@ mod tests {
             exchange_z.insert((i, j), val);
         }
 
-        // SU(2) model
         let su2_model = SU2HeisenbergModel::new(vec![spin; n], exchange_su2).unwrap();
 
-        // U(1) model
         let u1_model = HeisenbergModel {
             num_sites: n,
             two_s_list: vec![two_s; n],
@@ -1155,12 +878,10 @@ mod tests {
             exchange_z,
         };
 
-        // U(1): ground state from Sz=0 sector
         let u1_basis = u1_model.build_basis(&[0]).unwrap();
         let u1_ham = make_heisenberg_hamiltonian(&u1_basis, &u1_model, 1).unwrap();
         let u1_gs = get_ground_state_energy(&u1_ham);
 
-        // SU(2): ground state from S=0 sector
         let su2_basis = su2_model.build_basis(0.0).unwrap();
         let su2_ham = make_su2_heisenberg_hamiltonian(&su2_basis, &su2_model, 1).unwrap();
         let su2_gs = get_ground_state_energy(&su2_ham);
@@ -1191,7 +912,6 @@ mod tests {
         let spin = 0.5;
         let two_s = 1;
 
-        // Long-range interactions with various coupling strengths
         let pairs = [
             ((0, 1), 1.0),
             ((1, 2), 0.9),
@@ -1229,7 +949,6 @@ mod tests {
             exchange_z,
         };
 
-        // U(1): Collect all eigenvalues from all Sz sectors
         let mut u1_all_eigs = Vec::new();
         for sz2 in (-(n as i32)..=(n as i32)).step_by(2) {
             let basis = u1_model.build_basis(&[sz2]).unwrap();
@@ -1240,7 +959,6 @@ mod tests {
             u1_all_eigs.extend(get_all_eigenvalues(&ham));
         }
 
-        // SU(2): Collect all eigenvalues from all S sectors (with degeneracy 2S+1)
         let mut su2_all_eigs = Vec::new();
         for s2 in (0..=(n as i32)).step_by(2) {
             let s = s2 as f64 / 2.0;
@@ -1250,7 +968,7 @@ mod tests {
             }
             let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
             let eigs = get_all_eigenvalues(&ham);
-            let degeneracy = (s2 + 1) as usize; // 2S+1
+            let degeneracy = (s2 + 1) as usize;
             for e in eigs {
                 for _ in 0..degeneracy {
                     su2_all_eigs.push(e);
@@ -1258,7 +976,6 @@ mod tests {
             }
         }
 
-        // Sort and compare
         u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -1287,7 +1004,6 @@ mod tests {
         let spin = 1.0;
         let two_s = 2;
 
-        // Long-range interactions with various coupling strengths
         let pairs = [
             ((0, 1), 1.0),
             ((1, 2), 0.9),
@@ -1325,7 +1041,6 @@ mod tests {
             exchange_z,
         };
 
-        // U(1): Collect all eigenvalues from all Sz sectors
         let mut u1_all_eigs = Vec::new();
         for sz2 in (-(n as i32 * two_s)..=(n as i32 * two_s)).step_by(2) {
             let basis = u1_model.build_basis(&[sz2]).unwrap();
@@ -1336,9 +1051,8 @@ mod tests {
             u1_all_eigs.extend(get_all_eigenvalues(&ham));
         }
 
-        // SU(2): Collect all eigenvalues from all S sectors (with degeneracy 2S+1)
         let mut su2_all_eigs = Vec::new();
-        let max_s2 = n as i32 * two_s; // Maximum 2*S = n * 2*s
+        let max_s2 = n as i32 * two_s;
         for s2 in (0..=max_s2).step_by(2) {
             let s = s2 as f64 / 2.0;
             let basis = su2_model.build_basis(s).unwrap();
@@ -1347,7 +1061,7 @@ mod tests {
             }
             let ham = make_su2_heisenberg_hamiltonian(&basis, &su2_model, 1).unwrap();
             let eigs = get_all_eigenvalues(&ham);
-            let degeneracy = (s2 + 1) as usize; // 2S+1
+            let degeneracy = (s2 + 1) as usize;
             for e in eigs {
                 for _ in 0..degeneracy {
                     su2_all_eigs.push(e);
@@ -1355,7 +1069,6 @@ mod tests {
             }
         }
 
-        // Sort and compare
         u1_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         su2_all_eigs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 

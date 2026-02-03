@@ -99,7 +99,10 @@ pub fn solve_su2_heisenberg(
         let lanczos_start = Instant::now();
         let mut eigenvector = Vec::new();
         let mut energy = 0.0;
-        let known_eigenvecs: Vec<&[f64]> = eigenvectors.iter().map(|v: &Vec<f64>| v.as_slice()).collect();
+        let known_eigenvecs: Vec<&[f64]> = eigenvectors
+            .iter()
+            .map(|v: &Vec<f64>| v.as_slice())
+            .collect();
 
         let lanczos_log = lanczos(
             &hamiltonian,
