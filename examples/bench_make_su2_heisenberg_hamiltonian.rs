@@ -1,20 +1,19 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use edu1sces::basis::Basis;
-use edu1sces::hamiltonian::heisenberg_hamiltonian::make_heisenberg_hamiltonian;
-use edu1sces::model::{HeisenbergModel, QuantumModel};
+use edu1sces::hamiltonian::su2_heisenberg_hamiltonian::make_su2_heisenberg_hamiltonian;
+use edu1sces::model::SU2HeisenbergModel;
 
 fn benchmark(
-    basis: &Basis,
-    model: &HeisenbergModel,
+    basis: &edu1sces::basis::SU2HeisenbergBasis,
+    model: &SU2HeisenbergModel,
     num_threads: usize,
     num_iterations: usize,
 ) -> (f64, usize) {
     let t0 = Instant::now();
     let mut h = None;
     for _ in 0..num_iterations {
-        h = Some(make_heisenberg_hamiltonian(basis, model, num_threads).unwrap());
+        h = Some(make_su2_heisenberg_hamiltonian(basis, model, num_threads).unwrap());
     }
     let dt = t0.elapsed();
 
@@ -37,39 +36,31 @@ fn generate_1d_chain_bonds(n: usize) -> HashMap<(usize, usize), f64> {
 
 fn main() {
     let n = 20;
-    let two_s = 1;
-    let total_sz = 0.0;
+    let spin = 0.5;
+    let total_s = 0.0;
     let num_iterations = 10;
     let thread_counts = [1, 2, 3, 4, 5, 6];
 
     // 1D nearest-neighbor chain
-    let exchange_xy = generate_1d_chain_bonds(n);
-    let exchange_z = exchange_xy.clone();
+    let exchange = generate_1d_chain_bonds(n);
 
-    let model = HeisenbergModel {
-        num_sites: n,
-        two_s_list: vec![two_s; n],
-        hz_list: vec![0.0; n],
-        d_list: vec![0.0; n],
-        exchange_xy,
-        exchange_z,
-    };
+    let model = SU2HeisenbergModel::new(vec![spin; n], exchange).unwrap();
 
-    println!("=== make_heisenberg_hamiltonian Benchmark ===");
+    println!("=== make_su2_heisenberg_hamiltonian Benchmark ===");
     println!(
-        "n={}, two_s={}, total_sz={}, 1D chain (nearest-neighbor)\n",
-        n, two_s, total_sz
+        "n={}, spin={}, total_s={}, 1D chain (nearest-neighbor)\n",
+        n, spin, total_s
     );
 
-    println!("Building basis...");
+    // Build basis (automatically optimizes coupling order)
+    println!("Building basis (with auto-optimized coupling order)...");
     let t0 = Instant::now();
-    // target_quantum_numbers = [2*Sz]
-    let total_sz2 = (2.0_f64 * total_sz).round() as i32;
-    let basis = model.build_basis(&[total_sz2]).unwrap();
+    let basis = model.build_basis(total_s).unwrap();
     let dt = t0.elapsed();
-    println!("  dim={}, time={:?}\n", basis.dim(), dt);
+    println!("  dim={}, time={:?}", basis.dim(), dt);
+    println!("  coupling_order: {:?}\n", basis.coupling_order);
 
-    println!("--- make_heisenberg_hamiltonian ---");
+    println!("--- make_su2_heisenberg_hamiltonian ---");
     let mut baseline_time_ms = None;
     let mut last_nnz = 0;
     for &threads in &thread_counts {

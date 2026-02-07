@@ -1,7 +1,9 @@
 use ahash::AHashMap;
 use anyhow::{bail, Result};
 use pyo3::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::basis::SU2HeisenbergBasis;
 
 /// Spin-S Heisenberg model with SU(2) symmetry
 ///
@@ -47,17 +49,33 @@ impl SU2HeisenbergModel {
 
     /// Build SU(2) basis for a fixed total spin S_total.
     ///
-    /// Returns basis: Vec<Vec<u8>> - list of basis states (sorted lexicographically)
+    /// Automatically optimizes the coupling order using Cuthill-McKee algorithm
+    /// to minimize the number of swap operations in Hamiltonian construction.
+    pub fn build_basis(&self, total_s: f64) -> Result<SU2HeisenbergBasis> {
+        let order = self.optimal_coupling_order();
+        self.build_basis_with_order(total_s, &order)
+    }
+
+    /// Build SU(2) basis with a specified coupling order.
     ///
     /// Each basis state is a Vec<u8> of length N:
     ///   [2*J_1, 2*J_2, ..., 2*J_N]
     /// where
-    ///   J_1 = S_1 (i.e. 2*J_1 = two_s_list[0]),
-    ///   J_{k+1} is the total spin after coupling sites 0..k,
+    ///   J_k = total spin after coupling the first k sites (according to coupling_order)
     ///   J_N = S_total (target).
     ///
+    /// `coupling_order[k]` specifies the original site index at coupling position k.
+    /// For example, `coupling_order = [2, 0, 1]` means:
+    ///   - First couple site 2
+    ///   - Then couple site 0
+    ///   - Finally couple site 1
+    ///
     /// The stored values are 2*J (integers) in u8, so we require sum(2S_i) <= 255.
-    pub fn build_basis(&self, total_s: f64) -> Result<Vec<Vec<u8>>> {
+    pub fn build_basis_with_order(
+        &self,
+        total_s: f64,
+        coupling_order: &[usize],
+    ) -> Result<SU2HeisenbergBasis> {
         let two_s_f = 2.0 * total_s;
         let two_s_target = two_s_f.round() as i32;
 
@@ -70,7 +88,32 @@ impl SU2HeisenbergModel {
 
         let n = self.num_sites;
 
-        let sum_two_s: i32 = self.two_s_list.iter().sum();
+        // Validate coupling_order
+        if coupling_order.len() != n {
+            bail!(
+                "coupling_order length {} does not match num_sites {}",
+                coupling_order.len(),
+                n
+            );
+        }
+        let mut seen = vec![false; n];
+        for &site in coupling_order {
+            if site >= n {
+                bail!("coupling_order contains invalid site index {}", site);
+            }
+            if seen[site] {
+                bail!("coupling_order contains duplicate site index {}", site);
+            }
+            seen[site] = true;
+        }
+
+        // For basis construction, we need spins in coupling order
+        let two_s_in_order: Vec<i32> = coupling_order
+            .iter()
+            .map(|&site| self.two_s_list[site])
+            .collect();
+
+        let sum_two_s: i32 = two_s_in_order.iter().sum();
         if sum_two_s > (u8::MAX as i32) {
             bail!(
                 "sum(2S_i) = {} exceeds u8::MAX (=255); cannot store 2J in u8",
@@ -80,34 +123,49 @@ impl SU2HeisenbergModel {
 
         // Parity + range checks
         if ((sum_two_s - two_s_target) & 1) != 0 {
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+                coupling_order.to_vec(),
+            ));
         }
         if two_s_target > sum_two_s {
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+                coupling_order.to_vec(),
+            ));
         }
 
         // N=1: only possible if S_tot == S_1
         if n == 1 {
-            let two_s1 = self.two_s_list[0];
+            let two_s1 = two_s_in_order[0];
             if two_s1 == two_s_target {
                 let state = vec![two_s1 as u8];
-                return Ok(vec![state]);
+                return Ok(SU2HeisenbergBasis::new(
+                    vec![state],
+                    self.two_s_list.clone(),
+                    two_s_target,
+                    coupling_order.to_vec(),
+                ));
             }
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+                coupling_order.to_vec(),
+            ));
         }
 
-        // suffix_sum_two_s[i] = sum_{k=i}^{n-1} two_s_list[k]
+        // suffix_sum_two_s[i] = sum_{k=i}^{n-1} two_s_in_order[k]
         let mut suffix_sum_two_s = vec![0i32; n + 1];
         for i in (0..n).rev() {
-            suffix_sum_two_s[i] = suffix_sum_two_s[i + 1] + self.two_s_list[i];
+            suffix_sum_two_s[i] = suffix_sum_two_s[i + 1] + two_s_in_order[i];
         }
 
         // Reachability check: can we reach target from current 2J with remaining spins?
-        // This is a conservative pruning condition:
-        //   - Parity: (target - cur - rem_sum) must be even
-        //   - Upper bound: target <= cur + rem_sum
-        // Note: We don't check lower bound tightly because spin coupling can reduce J
-        // (e.g., J=1 coupled with S=1/2 can give J'=1/2, then J'=1/2 coupled with S=1/2 can give 0)
         #[inline]
         fn can_reach(cur: i32, rem_sum: i32, target: i32) -> bool {
             if target > cur + rem_sum {
@@ -116,9 +174,14 @@ impl SU2HeisenbergModel {
             ((target - (cur + rem_sum)) & 1) == 0
         }
 
-        let two_s1 = self.two_s_list[0];
+        let two_s1 = two_s_in_order[0];
         if !can_reach(two_s1, suffix_sum_two_s[1], two_s_target) {
-            return Ok(Vec::new());
+            return Ok(SU2HeisenbergBasis::new(
+                Vec::new(),
+                self.two_s_list.clone(),
+                two_s_target,
+                coupling_order.to_vec(),
+            ));
         }
 
         let mut basis: Vec<Vec<u8>> = Vec::new();
@@ -135,7 +198,6 @@ impl SU2HeisenbergModel {
             path: &mut Vec<u8>,
             out: &mut Vec<Vec<u8>>,
         ) {
-            // Reachability check (inlined for performance)
             #[inline]
             fn can_reach(cur: i32, rem_sum: i32, target: i32) -> bool {
                 if target > cur + rem_sum {
@@ -179,7 +241,7 @@ impl SU2HeisenbergModel {
         dfs(
             1,
             n,
-            &self.two_s_list,
+            &two_s_in_order,
             &suffix_sum_two_s,
             two_s_target,
             two_s1,
@@ -189,7 +251,86 @@ impl SU2HeisenbergModel {
 
         basis.sort_unstable();
 
-        Ok(basis)
+        Ok(SU2HeisenbergBasis::new(
+            basis,
+            self.two_s_list.clone(),
+            two_s_target,
+            coupling_order.to_vec(),
+        ))
+    }
+
+    /// Cuthill-McKee algorithm to find a site ordering that minimizes bandwidth.
+    ///
+    /// The algorithm:
+    /// 1. Build adjacency list from bonds
+    /// 2. Start BFS from a peripheral node (node with minimum degree)
+    /// 3. Visit neighbors in order of increasing degree
+    ///
+    /// Returns a permutation `order` where `order[position] = original_site_index`.
+    ///
+    /// For a 1D chain with nearest-neighbor bonds, this produces the natural
+    /// ordering [0, 1, 2, ..., n-1] (starting from an endpoint).
+    pub fn cuthill_mckee_order(num_sites: usize, bonds: &[(usize, usize)]) -> Vec<usize> {
+        if num_sites == 0 {
+            return Vec::new();
+        }
+        if num_sites == 1 {
+            return vec![0];
+        }
+
+        // Build adjacency list
+        let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); num_sites];
+        for &(i, j) in bonds {
+            if i != j && i < num_sites && j < num_sites {
+                adj[i].insert(j);
+                adj[j].insert(i);
+            }
+        }
+
+        let mut order = Vec::with_capacity(num_sites);
+        let mut visited = vec![false; num_sites];
+
+        // Process all connected components
+        while order.len() < num_sites {
+            // Find the unvisited node with minimum degree (peripheral node)
+            let start = (0..num_sites)
+                .filter(|&v| !visited[v])
+                .min_by_key(|&v| adj[v].len())
+                .unwrap();
+
+            // BFS from the starting node
+            let mut queue = VecDeque::new();
+            queue.push_back(start);
+            visited[start] = true;
+            order.push(start);
+
+            while let Some(u) = queue.pop_front() {
+                // Get unvisited neighbors sorted by degree (ascending)
+                let mut neighbors: Vec<usize> =
+                    adj[u].iter().copied().filter(|&v| !visited[v]).collect();
+                neighbors.sort_by_key(|&v| adj[v].len());
+
+                for v in neighbors {
+                    if !visited[v] {
+                        visited[v] = true;
+                        order.push(v);
+                        queue.push_back(v);
+                    }
+                }
+            }
+        }
+
+        order
+    }
+
+    /// Returns an optimal coupling order for the Hamiltonian construction.
+    ///
+    /// Uses Cuthill-McKee algorithm to find an ordering that minimizes the
+    /// bandwidth of the interaction graph, which reduces the number of swap
+    /// operations needed in the Hamiltonian construction.
+    pub fn optimal_coupling_order(&self) -> Vec<usize> {
+        let bonds: Vec<(usize, usize)> = self.exchange.keys().copied().collect();
+        Self::cuthill_mckee_order(self.num_sites, &bonds)
     }
 }
 
@@ -449,6 +590,104 @@ mod tests {
     }
 
     #[test]
+    fn cuthill_mckee_1d_chain() {
+        // 1D chain: 0-1-2-3-4
+        // Nearest-neighbor bonds
+        let bonds = vec![(0, 1), (1, 2), (2, 3), (3, 4)];
+        let order = SU2HeisenbergModel::cuthill_mckee_order(5, &bonds);
+
+        // Should produce either [0, 1, 2, 3, 4] or [4, 3, 2, 1, 0]
+        // (depending on which endpoint is chosen as the start)
+        assert_eq!(order.len(), 5);
+
+        // Check that consecutive elements in the order are neighbors
+        for i in 0..4 {
+            let diff = (order[i] as i32 - order[i + 1] as i32).abs();
+            assert_eq!(
+                diff,
+                1,
+                "Sites at positions {} and {} are not neighbors",
+                i,
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn cuthill_mckee_square_lattice() {
+        // 2x2 square lattice:
+        //  0 - 1
+        //  |   |
+        //  2 - 3
+        // Bonds: (0,1), (0,2), (1,3), (2,3)
+        let bonds = vec![(0, 1), (0, 2), (1, 3), (2, 3)];
+        let order = SU2HeisenbergModel::cuthill_mckee_order(4, &bonds);
+
+        assert_eq!(order.len(), 4);
+        // Should be a valid permutation
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn build_basis_with_order_keeps_site_order() {
+        // Create a model with specific spins
+        let m = SU2HeisenbergModel {
+            num_sites: 3,
+            two_s_list: vec![1, 2, 3], // spins 1/2, 1, 3/2
+            exchange: HashMap::new(),
+            diagonal_shift: 0.0,
+        };
+
+        // Reverse the order: coupling_order[k] = original site at position k
+        let order = vec![2, 1, 0];
+        let basis = m.build_basis_with_order(0.5, &order).unwrap();
+
+        // two_s_list stays in original site order (NOT coupling order)
+        assert_eq!(basis.two_s_list, vec![1, 2, 3]); // same as model
+        assert_eq!(basis.coupling_order, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn optimal_coupling_order_1d() {
+        // 1D chain with sites in random order
+        let mut exchange = HashMap::new();
+        exchange.insert((0, 3), 1.0); // 0-3
+        exchange.insert((3, 1), 1.0); // 3-1
+        exchange.insert((1, 4), 1.0); // 1-4
+        exchange.insert((4, 2), 1.0); // 4-2
+                                      // Actual chain: 0-3-1-4-2
+
+        let m = SU2HeisenbergModel {
+            num_sites: 5,
+            two_s_list: vec![1; 5],
+            exchange,
+            diagonal_shift: 0.0,
+        };
+
+        let order = m.optimal_coupling_order();
+
+        // Build inverse mapping: site_to_pos[site] = position
+        let mut site_to_pos = vec![0usize; 5];
+        for (pos, &site) in order.iter().enumerate() {
+            site_to_pos[site] = pos;
+        }
+
+        // After optimization, bonds should be between consecutive positions
+        for &(i, j) in m.exchange.keys() {
+            let pos_i = site_to_pos[i];
+            let pos_j = site_to_pos[j];
+            let diff = (pos_i as i32 - pos_j as i32).abs();
+            assert_eq!(
+                diff, 1,
+                "Bond ({}, {}) at positions ({}, {}) is not adjacent",
+                i, j, pos_i, pos_j
+            );
+        }
+    }
+
+    #[test]
     fn build_basis_single_site() {
         // Single spin-1/2
         let m = SU2HeisenbergModel {
@@ -460,12 +699,12 @@ mod tests {
 
         // S=1/2: one basis state [2*J_1] = [1]
         let basis = m.build_basis(0.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8]);
 
         // S=0: forbidden
         let basis = m.build_basis(0.0).unwrap();
-        assert_eq!(basis.len(), 0);
+        assert_eq!(basis.dim(), 0);
     }
 
     #[test]
@@ -480,13 +719,13 @@ mod tests {
 
         // S=0: one basis [2*J_1, 2*J_2] = [1, 0]
         let basis = m.build_basis(0.0).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 0]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 0]);
 
         // S=1: one basis [2*J_1, 2*J_2] = [1, 2]
         let basis = m.build_basis(1.0).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 2]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 2]);
     }
 
     #[test]
@@ -504,15 +743,15 @@ mod tests {
         // Path 1: J_1=1/2, J_2=0, then 0 ⊗ 1/2 = 1/2 → [1, 0, 1]
         // Path 2: J_1=1/2, J_2=1, then 1 ⊗ 1/2 = 1/2 or 3/2, pick 1/2 → [1, 2, 1]
         let basis = m.build_basis(0.5).unwrap();
-        assert_eq!(basis.len(), 2);
-        assert!(basis.contains(&vec![1u8, 0, 1]));
-        assert!(basis.contains(&vec![1u8, 2, 1]));
+        assert_eq!(basis.dim(), 2);
+        assert!(basis.basis.contains(&vec![1u8, 0, 1]));
+        assert!(basis.basis.contains(&vec![1u8, 2, 1]));
 
         // S=3/2: one basis
         // J_1=1/2, J_2=1, then 1 ⊗ 1/2 = 3/2 → [1, 2, 3]
         let basis = m.build_basis(1.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 2, 3]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 2, 3]);
     }
 
     #[test]
@@ -527,18 +766,18 @@ mod tests {
 
         // S=0: 2 bases
         let basis = m.build_basis(0.0).unwrap();
-        assert_eq!(basis.len(), 2);
+        assert_eq!(basis.dim(), 2);
 
         // S=1: 3 bases
         let basis = m.build_basis(1.0).unwrap();
-        assert_eq!(basis.len(), 3);
+        assert_eq!(basis.dim(), 3);
 
         // S=2: 1 basis
         // [2*J_1, 2*J_2, 2*J_3, 2*J_4] = [1, 2, 3, 4]
         // J_1=1/2, J_2=1, J_3=3/2, J_4=2
         let basis = m.build_basis(2.0).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 2, 3, 4]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 2, 3, 4]);
     }
 
     #[test]
@@ -553,12 +792,12 @@ mod tests {
 
         // S=1/2: [2*J_1, 2*J_2] = [1, 1]
         let basis = m.build_basis(0.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 1]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 1]);
 
         // S=3/2: [2*J_1, 2*J_2] = [1, 3]
         let basis = m.build_basis(1.5).unwrap();
-        assert_eq!(basis.len(), 1);
-        assert_eq!(basis[0], vec![1u8, 3]);
+        assert_eq!(basis.dim(), 1);
+        assert_eq!(basis.basis[0], vec![1u8, 3]);
     }
 }

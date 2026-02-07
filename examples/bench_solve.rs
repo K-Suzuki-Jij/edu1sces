@@ -43,8 +43,7 @@ where
         let avg_time_ms = dt.as_millis() as f64 / num_iterations as f64;
 
         let result = result.unwrap();
-        let final_residual = result
-            .inverse_iteration_logs[0]
+        let final_residual = result.inverse_iteration_logs[0]
             .residual_errors
             .last()
             .copied()
